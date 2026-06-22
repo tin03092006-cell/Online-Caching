@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import json
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,8 @@ def build_results_frame(
     cache_results: list[CacheRunResult],
     belady_misses: int,
     mark_misses: int,
+    selected_hedge_learning_rate: float,
+    validation_mae: float | None,
 ) -> pd.DataFrame:
     result_rows: list[dict[str, float | int | str]] = []
 
@@ -118,6 +121,8 @@ def build_results_frame(
                 "miss_ratio": cache_result.miss_ratio,
                 "empirical_competitive_ratio": competitive_ratio,
                 "improvement_vs_mark_percent": improvement_vs_mark,
+                "selected_hedge_learning_rate": selected_hedge_learning_rate,
+                "validation_mae": validation_mae if validation_mae is not None else "",
             }
         )
 
@@ -215,8 +220,18 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
         cache_results=[belady_result, mark_result, hedge_result],
         belady_misses=belady_result.cache_misses,
         mark_misses=mark_result.cache_misses,
+        selected_hedge_learning_rate=selected_hedge_learning_rate,
+        validation_mae=validation_mae,
     )
     save_processed_frame(results_frame, processed_dir / "benchmark_results.csv")
+    
+    training_meta = {
+        "selected_hedge_learning_rate": selected_hedge_learning_rate,
+        "validation_mae": validation_mae
+    }
+    with open(processed_dir / "training_metadata.json", "w") as f:
+        json.dump(training_meta, f, indent=2)
+        
     print_summary(results_frame, selected_hedge_learning_rate, validation_mae)
 
 

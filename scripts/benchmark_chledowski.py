@@ -9,6 +9,7 @@ import traceback
 import os
 import json
 import hashlib
+import copy
 from pathlib import Path
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,12 +45,21 @@ class DatasetFile:
     unique_items: int
     warning: str
 
+@dataclass(frozen=True)
+class TraceExtractionResult:
+    output_path: Path
+    parsed_rows: int
+    skipped_rows: int
+    unique_items: set
+    trace_hash: str
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Automated Benchmark Script")
     parser.add_argument("--datasets", type=str, default="all")
     parser.add_argument("--jobs", type=str, default="auto")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dataset-ref", type=str, default="")
+    parser.add_argument("--base-config", type=str, default="configs/config.yaml")
     parser.add_argument("--split-mode", choices=["auto", "official", "ratio"], default="auto")
     parser.add_argument("--cache-mode", choices=["ratio", "fixed"], default="ratio")
     parser.add_argument("--cache-ratio", type=float, default=0.01)
@@ -68,6 +78,19 @@ def verify_git():
         print("Git is required.")
         sys.exit(1)
 
+def get_project_commit() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return "unknown"
+
+def get_project_dirty() -> bool:
+    try:
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=True).stdout.strip()
+        return bool(status)
+    except Exception:
+        return True
+
 def manage_repo(dataset_ref):
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -79,14 +102,13 @@ def manage_repo(dataset_ref):
     if dataset_ref:
         subprocess.run(["git", "checkout", dataset_ref], cwd=str(CHLEDOWSKI_REPO), check=True)
     else:
-        # Default behavior: try to stay on main/master and pull if no ref requested
         subprocess.run(["git", "pull"], cwd=str(CHLEDOWSKI_REPO), check=False)
 
     commit_hash = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(CHLEDOWSKI_REPO), capture_output=True, text=True, check=True).stdout.strip()
     DATASET_REPO_COMMIT.write_text(commit_hash)
     return commit_hash
 
-def hash_file(filepath):
+def hash_file(filepath: Path) -> str:
     if not filepath.exists():
         return ""
     hasher = hashlib.sha256()
@@ -95,13 +117,13 @@ def hash_file(filepath):
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def get_code_hash():
-    hasher = hashlib.sha256()
+def get_code_hashes():
+    hashes = {}
     for f in ["src/model.py", "src/train.py", "src/data.py", "scripts/benchmark_chledowski.py"]:
         p = PROJECT_ROOT / f
         if p.exists():
-            hasher.update(p.read_bytes())
-    return hasher.hexdigest()
+            hashes[f] = hash_file(p)
+    return hashes
 
 def infer_format_and_parse(file_path: Path):
     try:
@@ -115,7 +137,6 @@ def infer_format_and_parse(file_path: Path):
         return DatasetFile(file_path, "other", "empty", None, 0, 0, 0, "empty file")
 
     delimiter = "," if "," in lines[0] else ("\t" if "\t" in lines[0] else (" " if " " in lines[0] else None))
-    
     def parse_line_to_tokens(l):
         return [x.strip() for x in l.split(delimiter) if x.strip()] if delimiter else [l.strip()]
 
@@ -178,8 +199,7 @@ def infer_format_and_parse(file_path: Path):
                 is_first = format_detected == "table_with_header"
                 for line in f:
                     line = line.strip()
-                    if not line:
-                        continue
+                    if not line: continue
                     if is_first:
                         is_first = False
                         continue
@@ -205,10 +225,34 @@ def infer_format_and_parse(file_path: Path):
 
 def discover_dataset_files(dataset_name):
     if not DATASETS_DIR.exists(): return []
-    return [p for p in DATASETS_DIR.rglob("*") if p.is_file() and dataset_name in p.name]
+    rejected_words = ["readme", "summary", "stats", "stat", "metadata", "report", "result", "log", "png", "jpg", "pdf", "md", "json", "yaml", "yml"]
+    allowed_exts = [".txt", ".csv", ".tsv", ".trace", ".dat"]
+    candidates = []
+    
+    for p in DATASETS_DIR.rglob("*"):
+        if not p.is_file() or dataset_name not in p.name:
+            continue
+        
+        lower_name = p.name.lower()
+        if any(w in lower_name for w in rejected_words):
+            candidates.append((p, False, "Contains rejected keyword"))
+            continue
+            
+        ext = p.suffix.lower()
+        if ext and ext not in allowed_exts:
+            candidates.append((p, False, f"Extension {ext} not allowed"))
+            continue
+            
+        candidates.append((p, True, ""))
+    
+    return candidates
 
-def extract_trace(dfiles, output_path):
+def extract_trace(dfiles, output_path) -> TraceExtractionResult:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    parsed_rows = 0
+    skipped_rows = 0
+    unique_items = set()
+    
     with output_path.open("w", encoding="utf-8") as out_f:
         for dfile in dfiles:
             first_line = ""
@@ -231,10 +275,53 @@ def extract_trace(dfiles, output_path):
                         continue
                     tokens = [x.strip() for x in line.split(delimiter) if x.strip()] if delimiter else [line.strip()]
                     if len(tokens) > dfile.item_column:
-                        out_f.write(f"{tokens[dfile.item_column]}\n")
+                        val = tokens[dfile.item_column]
+                        out_f.write(f"{val}\n")
+                        unique_items.add(val)
+                        parsed_rows += 1
+                    else:
+                        skipped_rows += 1
 
-def process_dataset(dataset, args, commit_hash, code_hash):
+    return TraceExtractionResult(output_path, parsed_rows, skipped_rows, unique_items, hash_file(output_path))
+
+def make_trace_report_info(dataset: str, success: bool, split_mode: str, valid_dfiles: list[DatasetFile], rejected_files_str: str, 
+                           train_reqs=0, valid_reqs=0, test_reqs=0, train_uniq=0, valid_uniq=0, test_uniq=0, 
+                           cache_mode="ratio", cache_ratio=0.01, min_cache=16, max_cache=512, selected_cache=0, warning=""):
+    return {
+        "requested_dataset": dataset,
+        "actual_dataset": dataset,
+        "success": success,
+        "split_mode": split_mode,
+        "source_files": "|".join(f.path.name for f in valid_dfiles),
+        "rejected_files": rejected_files_str,
+        "number_of_requests_train": train_reqs,
+        "number_of_requests_validation": valid_reqs,
+        "number_of_requests_test": test_reqs,
+        "number_of_unique_items_train": train_uniq,
+        "number_of_unique_items_validation": valid_uniq,
+        "number_of_unique_items_test": test_uniq,
+        "cache_mode": cache_mode,
+        "cache_ratio": cache_ratio,
+        "min_cache_size": min_cache,
+        "max_cache_size": max_cache,
+        "selected_cache_size": selected_cache,
+        "format_detected_per_file": "|".join(f"{f.path.name}:{f.format_detected}" for f in valid_dfiles),
+        "item_column_per_file": "|".join(f"{f.path.name}:{f.item_column}" for f in valid_dfiles),
+        "parsed_rows_per_file": "|".join(f"{f.path.name}:{f.parsed_rows}" for f in valid_dfiles),
+        "skipped_rows_per_file": "|".join(f"{f.path.name}:{f.skipped_rows}" for f in valid_dfiles),
+        "unique_items_per_file": "|".join(f"{f.path.name}:{f.unique_items}" for f in valid_dfiles),
+        "warning": warning
+    }
+
+def previous_run_succeeded(run_status_file: Path) -> bool:
+    if not run_status_file.exists():
+        return False
+    text = run_status_file.read_text(encoding="utf-8")
+    return "success: True" in text and "return_code: 0" in text
+
+def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, project_dirty, base_config):
     run_dir = BENCHMARK_RUNS_DIR / dataset
+    prepared_dir = run_dir / "_prepared"
     run_status_file = run_dir / "run_status.txt"
     metadata_file = run_dir / "metadata.json"
     stdout_file = run_dir / "stdout.log"
@@ -242,31 +329,33 @@ def process_dataset(dataset, args, commit_hash, code_hash):
 
     candidates = discover_dataset_files(dataset)
     valid_dfiles = []
-    rejected_dfiles = []
+    rejected_records = []
+    discovery_records = []
 
-    for f in candidates:
-        dfile = infer_format_and_parse(f)
+    for p, allowed, reason in candidates:
+        if not allowed:
+            rejected_records.append((p, reason))
+            discovery_records.append({"dataset": dataset, "path": str(p), "accepted": False, "split": "other", "format_detected": "none", "item_column": None, "parsed_rows": 0, "skipped_rows": 0, "unique_items": 0, "warning": reason})
+            continue
+        
+        dfile = infer_format_and_parse(p)
         if dfile.parsed_rows > 0 and dfile.item_column is not None:
             valid_dfiles.append(dfile)
+            discovery_records.append({"dataset": dataset, "path": str(p), "accepted": True, "split": dfile.split, "format_detected": dfile.format_detected, "item_column": dfile.item_column, "parsed_rows": dfile.parsed_rows, "skipped_rows": dfile.skipped_rows, "unique_items": dfile.unique_items, "warning": dfile.warning})
         else:
-            rejected_dfiles.append(dfile)
+            rejected_records.append((p, dfile.warning))
+            discovery_records.append({"dataset": dataset, "path": str(p), "accepted": False, "split": dfile.split, "format_detected": dfile.format_detected, "item_column": dfile.item_column, "parsed_rows": dfile.parsed_rows, "skipped_rows": dfile.skipped_rows, "unique_items": dfile.unique_items, "warning": dfile.warning})
 
     valid_dfiles.sort(key=lambda x: x.path)
+    rejected_files_str = "|".join(f"{p.name}:{reason}" for p, reason in rejected_records)
     
     if not valid_dfiles:
         return {
-            "dataset": dataset,
-            "success": False,
-            "error_message": "No valid trace files found",
-            "return_code": -1,
-            "runtime_seconds": 0.0,
-            "skipped_due_to_cache": False,
-            "source_files": "",
-            "rejected_files": "|".join(f.path.name for f in rejected_dfiles),
-            "split_mode": args.split_mode
+            "dataset": dataset, "success": False, "error_message": "No valid trace files found", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
+            "split_mode": args.split_mode, "discovery_records": discovery_records,
+            "trace_report_info": make_trace_report_info(dataset, False, args.split_mode, [], rejected_files_str, warning="No valid trace files found")
         }
 
-    # Split mode
     train_dfiles = [f for f in valid_dfiles if f.split == "train"]
     valid_split_dfiles = [f for f in valid_dfiles if f.split == "validation"]
     test_dfiles = [f for f in valid_dfiles if f.split == "test"]
@@ -277,73 +366,49 @@ def process_dataset(dataset, args, commit_hash, code_hash):
     if actual_split_mode == "auto":
         actual_split_mode = "official" if has_official else "ratio"
 
-    total_reqs_train = 0
-    total_reqs_valid = 0
-    total_reqs_test = 0
-    unique_train = 0
-    unique_valid = 0
-    unique_test = 0
+    if actual_split_mode == "official" and not has_official:
+        return {
+            "dataset": dataset, "success": False, "error_message": "Official split requested but files not found", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
+            "split_mode": actual_split_mode, "discovery_records": discovery_records,
+            "trace_report_info": make_trace_report_info(dataset, False, actual_split_mode, valid_dfiles, rejected_files_str, warning="Official split requested but missing")
+        }
 
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+
+    trace_hashes = {}
     if actual_split_mode == "official":
-        if not has_official:
-            return {
-                "dataset": dataset, "success": False, "error_message": "Official split requested but files not found",
-                "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
-                "source_files": "|".join(f.path.name for f in valid_dfiles),
-                "rejected_files": "|".join(f.path.name for f in rejected_dfiles),
-                "split_mode": actual_split_mode
-            }
-        total_reqs_train = sum(f.parsed_rows for f in train_dfiles)
-        total_reqs_valid = sum(f.parsed_rows for f in valid_split_dfiles)
-        total_reqs_test = sum(f.parsed_rows for f in test_dfiles)
-        # We roughly sum up uniques for trace report
-        unique_train = sum(f.unique_items for f in train_dfiles)
-        unique_valid = sum(f.unique_items for f in valid_split_dfiles)
-        unique_test = sum(f.unique_items for f in test_dfiles)
-        total_uniques = unique_train + unique_valid + unique_test
+        train_res = extract_trace(train_dfiles, prepared_dir / "train_trace.txt")
+        valid_res = extract_trace(valid_split_dfiles, prepared_dir / "validation_trace.txt")
+        test_res = extract_trace(test_dfiles, prepared_dir / "test_trace.txt")
+        total_unique_items = len(train_res.unique_items | valid_res.unique_items | test_res.unique_items)
+        trace_hashes = {"train": train_res.trace_hash, "validation": valid_res.trace_hash, "test": test_res.trace_hash}
+        train_reqs, valid_reqs, test_reqs = train_res.parsed_rows, valid_res.parsed_rows, test_res.parsed_rows
+        train_uniq, valid_uniq, test_uniq = len(train_res.unique_items), len(valid_res.unique_items), len(test_res.unique_items)
     else:
         ordered_files = train_dfiles + valid_split_dfiles + test_dfiles + other_dfiles
-        total_reqs = sum(f.parsed_rows for f in ordered_files)
-        total_reqs_train = int(total_reqs * args.train_ratio)
-        total_reqs_valid = int(total_reqs * args.validation_ratio)
-        total_reqs_test = total_reqs - total_reqs_train - total_reqs_valid
-        total_uniques = sum(f.unique_items for f in ordered_files)
-        # roughly assign uniques for report
-        unique_train = int(total_uniques * args.train_ratio)
-        unique_valid = int(total_uniques * args.validation_ratio)
-        unique_test = total_uniques - unique_train - unique_valid
+        raw_res = extract_trace(ordered_files, prepared_dir / "trace.txt")
+        total_unique_items = len(raw_res.unique_items)
+        trace_hashes = {"raw": raw_res.trace_hash}
+        train_reqs = int(raw_res.parsed_rows * args.train_ratio)
+        valid_reqs = int(raw_res.parsed_rows * args.validation_ratio)
+        test_reqs = raw_res.parsed_rows - train_reqs - valid_reqs
+        train_uniq = int(total_unique_items * args.train_ratio)
+        valid_uniq = int(total_unique_items * args.validation_ratio)
+        test_uniq = total_unique_items - train_uniq - valid_uniq
 
-    # Cache logic
     if args.cache_mode == "fixed":
         selected_cache_size = args.fixed_cache_size
     else:
-        selected_cache_size = min(args.max_cache_size, max(args.min_cache_size, int(args.cache_ratio * total_uniques)))
-        if selected_cache_size >= total_uniques and total_uniques > 0:
-            selected_cache_size = max(2, total_uniques // 10)
+        selected_cache_size = min(args.max_cache_size, max(args.min_cache_size, int(args.cache_ratio * total_unique_items)))
+        if selected_cache_size >= total_unique_items and total_unique_items > 0:
+            selected_cache_size = max(2, total_unique_items // 10)
 
-    # Base config
-    seed = 42
-    config_dict = {
-        "seed": seed,
-        "paths": {"processed_dir": str(run_dir)},
-        "data": {
-            "train_ratio": args.train_ratio,
-            "validation_ratio": args.validation_ratio,
-            "recent_window_size": 128,
-            "max_training_rows": 50000
-        },
-        "cache": {"cache_size": selected_cache_size},
-        "model": {
-            "type": "gradient_boosting",
-            "learning_rate": 0.05,
-            "n_estimators": 100,
-            "max_depth": 3
-        },
-        "hedge": {
-            "feedback_mode": "delayed",
-            "candidate_learning_rates": [0.1, 0.3, 0.7, 1.0]
-        }
-    }
+    config_dict = copy.deepcopy(base_config)
+    config_dict["paths"]["processed_dir"] = str(run_dir)
+    config_dict["data"]["train_ratio"] = args.train_ratio
+    config_dict["data"]["validation_ratio"] = args.validation_ratio
+    config_dict["cache"]["cache_size"] = selected_cache_size
+    config_dict["hedge"]["feedback_mode"] = "delayed"
 
     if actual_split_mode == "official":
         config_dict["paths"]["train_trace"] = str(run_dir / "train_trace.txt")
@@ -353,97 +418,75 @@ def process_dataset(dataset, args, commit_hash, code_hash):
         config_dict["paths"]["raw_trace"] = str(run_dir / "trace.txt")
 
     config_hash = hashlib.sha256(json.dumps(config_dict, sort_keys=True).encode()).hexdigest()
+    base_config_hash = hash_file(Path(args.base_config))
 
     metadata = {
-        "project_commit": "unknown", # Can be extracted if project is a git repo
+        "project_commit": project_commit,
+        "project_dirty": project_dirty,
         "dataset_commit": commit_hash,
-        "script_hash": code_hash,
+        "dataset_ref_requested": args.dataset_ref or "unpinned",
+        "code_hash": code_hashes.get("scripts/benchmark_chledowski.py", ""),
         "config_hash": config_hash,
+        "base_config_path": args.base_config,
+        "base_config_hash": base_config_hash,
+        "source_file_hashes": code_hashes,
+        "trace_hashes": trace_hashes,
         "dataset": dataset,
         "split_mode": actual_split_mode,
-        "cache_mode": args.cache_mode,
-        "selected_cache_size": selected_cache_size,
-        "seed": seed,
-        "model": config_dict["model"],
-        "hedge": config_dict["hedge"]
-    }
-
-    trace_report_info = {
-        "requested_dataset": dataset,
-        "actual_dataset": dataset,
-        "success": False,
-        "split_mode": actual_split_mode,
-        "source_files": "|".join(f.path.name for f in valid_dfiles),
-        "rejected_files": "|".join(f.path.name for f in rejected_dfiles),
-        "number_of_requests_train": total_reqs_train,
-        "number_of_requests_validation": total_reqs_valid,
-        "number_of_requests_test": total_reqs_test,
-        "number_of_unique_items_train": unique_train,
-        "number_of_unique_items_validation": unique_valid,
-        "number_of_unique_items_test": unique_test,
         "cache_mode": args.cache_mode,
         "cache_ratio": args.cache_ratio,
         "min_cache_size": args.min_cache_size,
         "max_cache_size": args.max_cache_size,
+        "fixed_cache_size": args.fixed_cache_size,
         "selected_cache_size": selected_cache_size,
-        "format_detected": "|".join(set(f.format_detected for f in valid_dfiles)),
-        "item_column": valid_dfiles[0].item_column if valid_dfiles else "",
-        "warning": " | ".join(filter(None, [f.warning for f in valid_dfiles]))
+        "seed": config_dict.get("seed", 42),
+        "model": config_dict["model"],
+        "hedge": config_dict["hedge"]
     }
 
-    # Check if we can skip
+    trace_report_info = make_trace_report_info(
+        dataset, False, actual_split_mode, valid_dfiles, rejected_files_str,
+        train_reqs, valid_reqs, test_reqs, train_uniq, valid_uniq, test_uniq,
+        args.cache_mode, args.cache_ratio, args.min_cache_size, args.max_cache_size, selected_cache_size
+    )
+
     if not args.force and metadata_file.exists() and (run_dir / "benchmark_results.csv").exists():
         try:
             with open(metadata_file, "r") as mf:
                 old_meta = json.load(mf)
-            # Remove trace_hashes for comparison since they are generated after
-            old_trace_hashes = old_meta.pop("trace_hashes", {})
-            current_trace_hashes = metadata.pop("trace_hashes", {})
-            
-            if old_meta == metadata:
+            if old_meta == metadata and previous_run_succeeded(run_status_file):
                 trace_report_info["success"] = True
                 print(f"[DONE] {dataset} (skipped_due_to_cache)")
+                shutil.rmtree(prepared_dir)
                 return {
-                    "dataset": dataset, "success": True, "error_message": "", "return_code": 0,
-                    "runtime_seconds": 0.0, "skipped_due_to_cache": True,
-                    "source_files": trace_report_info["source_files"], "rejected_files": trace_report_info["rejected_files"],
-                    "split_mode": actual_split_mode, "trace_report_info": trace_report_info
+                    "dataset": dataset, "success": True, "error_message": "", "return_code": 0, "runtime_seconds": 0.0, "skipped_due_to_cache": True,
+                    "split_mode": actual_split_mode, "discovery_records": discovery_records, "trace_report_info": trace_report_info
                 }
         except Exception:
             pass
 
-    # Clean run dir
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    for item in run_dir.iterdir():
+        if item.is_file():
+            item.unlink()
+        elif item.is_dir() and item.name != "_prepared":
+            shutil.rmtree(item)
 
-    # Extract traces
-    if actual_split_mode == "official":
-        extract_trace(train_dfiles, run_dir / "train_trace.txt")
-        extract_trace(valid_split_dfiles, run_dir / "validation_trace.txt")
-        extract_trace(test_dfiles, run_dir / "test_trace.txt")
-        metadata["trace_hashes"] = {
-            "train": hash_file(run_dir / "train_trace.txt"),
-            "validation": hash_file(run_dir / "validation_trace.txt"),
-            "test": hash_file(run_dir / "test_trace.txt")
-        }
-    else:
-        extract_trace(valid_dfiles, run_dir / "trace.txt")
-        metadata["trace_hashes"] = {"raw": hash_file(run_dir / "trace.txt")}
+    for item in prepared_dir.iterdir():
+        shutil.move(str(item), str(run_dir / item.name))
+    shutil.rmtree(prepared_dir)
 
     with open(run_dir / "config.yaml", "w") as cf:
         yaml.dump(config_dict, cf)
-        
     with open(metadata_file, "w") as mf:
         json.dump(metadata, mf, indent=2)
 
     env = os.environ.copy()
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("MKL_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("NUMEXPR_NUM_THREADS", "1")
-    env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-    env.setdefault("PYTHONHASHSEED", "0")
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
+    env["VECLIB_MAXIMUM_THREADS"] = "1"
+    env["PYTHONHASHSEED"] = str(config_dict.get("seed", 42))
 
     print(f"[START] {dataset}")
     start_time = datetime.datetime.now()
@@ -464,12 +507,12 @@ def process_dataset(dataset, args, commit_hash, code_hash):
         except subprocess.TimeoutExpired:
             return_code = -1
             success = False
-            err_msg = f"Timeout after {args.timeout_seconds} seconds"
+            err_msg = f"Subprocess timeout"
             err_f.write(err_msg)
         except Exception as e:
             return_code = -1
             success = False
-            err_msg = str(e)
+            err_msg = f"Subprocess exception: {e}"
             err_f.write(err_msg)
 
     runtime = (datetime.datetime.now() - start_time).total_seconds()
@@ -480,25 +523,16 @@ def process_dataset(dataset, args, commit_hash, code_hash):
         print(f"[FAIL] {dataset} return_code={return_code}")
 
     trace_report_info["success"] = success
-    if err_msg:
-        trace_report_info["warning"] += f" | {err_msg}"
+    if err_msg: trace_report_info["warning"] += f" | {err_msg}"
 
     run_status = {
-        "dataset": dataset,
-        "success": success,
-        "error_message": err_msg,
-        "return_code": return_code,
-        "runtime_seconds": runtime,
-        "skipped_due_to_cache": False,
-        "source_files": trace_report_info["source_files"],
-        "rejected_files": trace_report_info["rejected_files"],
-        "split_mode": actual_split_mode,
-        "trace_report_info": trace_report_info
+        "dataset": dataset, "success": success, "error_message": err_msg, "return_code": return_code, "runtime_seconds": runtime, "skipped_due_to_cache": False,
+        "split_mode": actual_split_mode, "discovery_records": discovery_records, "trace_report_info": trace_report_info
     }
     
     with open(run_status_file, "w") as f:
         for k, v in run_status.items():
-            if k != "trace_report_info":
+            if k not in ["trace_report_info", "discovery_records"]:
                 f.write(f"{k}: {v}\n")
 
     return run_status
@@ -507,25 +541,40 @@ def main():
     args = parse_args()
     verify_git()
     commit_hash = manage_repo(args.dataset_ref)
-    code_hash = get_code_hash()
+    code_hashes = get_code_hashes()
+    project_commit = get_project_commit()
+    project_dirty = get_project_dirty()
+
+    with open(args.base_config, "r", encoding="utf-8") as f:
+        base_config = yaml.safe_load(f)
 
     datasets = PRIMARY_DATASETS if args.datasets == "all" else args.datasets.split(",")
-    
-    if args.jobs == "auto":
-        max_workers = os.cpu_count() or 1
-    else:
-        max_workers = int(args.jobs)
+    max_workers = os.cpu_count() or 1 if args.jobs == "auto" else int(args.jobs)
 
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_dataset, ds, args, commit_hash, code_hash): ds for ds in datasets}
-        for future in as_completed(futures):
-            results.append(future.result())
+        future_to_dataset = {executor.submit(process_dataset, ds, args, commit_hash, code_hashes, project_commit, project_dirty, base_config): ds for ds in datasets}
+        for future in as_completed(future_to_dataset):
+            ds = future_to_dataset[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                print(f"[FAIL] {ds} Unhandled worker exception")
+                results.append({
+                    "dataset": ds, "success": False, "error_message": f"Unhandled worker exception: {exc}", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
+                    "split_mode": args.split_mode, "discovery_records": [], "trace_report_info": make_trace_report_info(ds, False, args.split_mode, [], "", warning=f"Unhandled worker exception: {exc}")
+                })
 
-    # Sort results deterministically
     results.sort(key=lambda x: datasets.index(x["dataset"]) if x["dataset"] in datasets else 999)
 
-    # Write trace report
+    discovery_records = []
+    for r in results:
+        discovery_records.extend(r.get("discovery_records", []))
+    if discovery_records:
+        with open(FILE_DISCOVERY_LOG, "w", encoding="utf-8") as f:
+            for rec in discovery_records:
+                f.write(str(rec) + "\n")
+
     trace_reports = [r.get("trace_report_info") for r in results if r.get("trace_report_info")]
     if trace_reports:
         with open(TRACE_REPORT, "w", newline="", encoding="utf-8") as f:
@@ -533,7 +582,6 @@ def main():
             writer.writeheader()
             writer.writerows(trace_reports)
 
-    # Write summary
     summary_results = []
     for r in results:
         if r["success"]:
@@ -542,23 +590,21 @@ def main():
                 with open(benchmark_csv, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        # Only keep main algorithms
                         if row["algorithm"] in ["Belady/OPT", "MARK"] or row["algorithm"].startswith("HedgeFullDelayed"):
                             row["dataset"] = r["dataset"]
                             row["split_mode"] = r["split_mode"]
-                            row["seed"] = 42 # From config
+                            row["seed"] = base_config.get("seed", 42)
                             row["selected_cache_size"] = r["trace_report_info"]["selected_cache_size"]
                             summary_results.append(row)
 
     summary_results.sort(key=lambda x: (datasets.index(x["dataset"]) if x["dataset"] in datasets else 999, x["algorithm"]))
     if summary_results:
-        fieldnames = ["dataset", "algorithm", "cache_misses", "total_requests", "miss_ratio", "empirical_competitive_ratio", "improvement_vs_mark_percent", "selected_cache_size", "split_mode", "seed"]
+        fieldnames = ["dataset", "algorithm", "cache_misses", "total_requests", "miss_ratio", "empirical_competitive_ratio", "improvement_vs_mark_percent", "selected_cache_size", "split_mode", "seed", "selected_hedge_learning_rate", "validation_mae"]
         with open(SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(summary_results)
 
-    # Write run_status_all_datasets
     run_status_keys = ["dataset", "success", "return_code", "runtime_seconds", "config_path", "metadata_path", "stdout_log", "stderr_log", "error_message", "skipped_due_to_cache"]
     with open(RUN_STATUS_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=run_status_keys)
@@ -566,62 +612,41 @@ def main():
         for r in results:
             run_dir = BENCHMARK_RUNS_DIR / r["dataset"]
             writer.writerow({
-                "dataset": r["dataset"],
-                "success": r["success"],
-                "return_code": r["return_code"],
-                "runtime_seconds": r["runtime_seconds"],
-                "config_path": str(run_dir / "config.yaml"),
-                "metadata_path": str(run_dir / "metadata.json"),
-                "stdout_log": str(run_dir / "stdout.log"),
-                "stderr_log": str(run_dir / "stderr.log"),
-                "error_message": r["error_message"],
-                "skipped_due_to_cache": r["skipped_due_to_cache"]
+                "dataset": r["dataset"], "success": r["success"], "return_code": r["return_code"], "runtime_seconds": r["runtime_seconds"],
+                "config_path": str(run_dir / "config.yaml"), "metadata_path": str(run_dir / "metadata.json"), "stdout_log": str(run_dir / "stdout.log"), "stderr_log": str(run_dir / "stderr.log"),
+                "error_message": r["error_message"], "skipped_due_to_cache": r["skipped_due_to_cache"]
             })
 
-    # Write RUN_REPORT.md
     with open(RUN_REPORT_MD, "w", encoding="utf-8") as f:
         f.write("# Chledowski Dataset Benchmark Report\n\n")
         f.write("## 1. Run Metadata\n")
-        f.write(f"- Date/time: {datetime.datetime.now().isoformat()}\n")
-        f.write(f"- Project root: {PROJECT_ROOT}\n")
-        f.write(f"- Dataset repo path: {CHLEDOWSKI_REPO}\n")
-        f.write(f"- Dataset repo commit hash: {commit_hash}\n")
-        f.write(f"- Python executable: {sys.executable}\n")
-        f.write(f"- Operating system: {sys.platform}\n\n")
-        
-        f.write("## 2. Dataset Repository Metadata\n")
+        f.write(f"- project_commit: {project_commit}\n")
+        f.write(f"- project_dirty: {project_dirty}\n")
         f.write(f"- dataset_ref_requested: {args.dataset_ref or 'unpinned'}\n")
-        f.write(f"- dataset_commit_used: {commit_hash}\n\n")
-
-        f.write("## 3. Parallelism Settings\n")
+        f.write(f"- dataset_commit_used: {commit_hash}\n")
         f.write(f"- jobs: {args.jobs}\n\n")
 
-        f.write("## 4. Dataset Preparation Summary\n")
+        f.write("## 2. Dataset Preparation Summary\n")
         for tr in trace_reports:
             f.write(f"### {tr['requested_dataset']}\n")
+            f.write(f"- split_mode actual per dataset: {tr['split_mode']}\n")
             f.write(f"- source_files: {tr['source_files']}\n")
             f.write(f"- rejected_files: {tr['rejected_files']}\n")
-            f.write(f"- format_detected_per_file: {tr['format_detected']}\n")
+            f.write(f"- format_detected_per_file: {tr['format_detected_per_file']}\n")
             f.write(f"- warning: {tr['warning']}\n\n")
 
-        f.write("## 5. Config Summary\n")
-        f.write(f"- split_mode: {args.split_mode}\n")
-        f.write(f"- cache_mode: {args.cache_mode}\n")
-        f.write(f"- cache_ratio: {args.cache_ratio}\n")
-        f.write(f"- min_cache_size: {args.min_cache_size}\n")
-        f.write(f"- max_cache_size: {args.max_cache_size}\n")
-        f.write(f"- train_ratio: {args.train_ratio}\n")
-        f.write(f"- validation_ratio: {args.validation_ratio}\n\n")
+        f.write("## 3. Config Summary\n")
+        f.write(f"- cache_size rule: {args.cache_mode} (ratio: {args.cache_ratio}, fixed: {args.fixed_cache_size})\n\n")
 
-        f.write("## 6. Benchmark Results\n")
+        f.write("## 4. Benchmark Results\n")
         f.write("Standalone baselines: Belady/OPT, MARK\n")
         f.write("Proposed algorithm: HedgeFullDelayed\n")
         f.write("Internal experts: LRU, LFU, FIFO, MARK, RawML\n\n")
         for row in summary_results:
-            f.write(f"- Dataset: {row['dataset']} | Algorithm: {row['algorithm']} | Misses: {row['cache_misses']} | Miss Ratio: {row['miss_ratio']} | Improvement vs MARK: {row['improvement_vs_mark_percent']}%\n")
+            f.write(f"- Dataset: {row['dataset']} | Algorithm: {row['algorithm']} | Misses: {row['cache_misses']} | Miss Ratio: {row['miss_ratio']} | Improvement vs MARK: {row['improvement_vs_mark_percent']}% | Eta: {row.get('selected_hedge_learning_rate','')} | MAE: {row.get('validation_mae','')}\n")
         f.write("\n")
 
-        f.write("## 7. HedgeFullDelayed vs MARK\n")
+        f.write("## 5. HedgeFullDelayed vs MARK\n")
         ds_set = set(r["dataset"] for r in summary_results)
         ds_sorted = [ds for ds in datasets if ds in ds_set]
         for ds in ds_sorted:
@@ -634,16 +659,11 @@ def main():
             f.write(f"- {ds}: HedgeFullDelayed {res}\n")
         f.write("\n")
 
-        f.write("## 8. Failed Datasets\n")
+        f.write("## 6. Failed Datasets\n")
         failed = [r["dataset"] for r in results if not r["success"]]
-        fallback_text = "None" # Fallbacks removed based on requirements
-        f.write(f"- Fallback usage: {fallback_text}\n")
         f.write(f"- Failed datasets: {', '.join(failed) if failed else 'None'}\n\n")
 
-        f.write("## 9. Reproducibility Metadata\n")
-        f.write("See metadata.json in each run directory.\n\n")
-
-        f.write("## 10. Final Conclusion\n")
+        f.write("## 7. Final Conclusion\n")
         success_count = sum(1 for r in results if r["success"])
         f.write(f"- Number of successful datasets: {success_count}\n")
         f.write(f"- Number of failed datasets: {len(failed)}\n")
