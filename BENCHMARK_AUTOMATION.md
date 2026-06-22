@@ -1,11 +1,11 @@
 # Benchmark Automation
 
-Branch: `classic-anchor-clean`
+Branch: `all-expert-soft-clean`
 
 ```bash
 git fetch origin
-git checkout classic-anchor-clean
-git pull origin classic-anchor-clean
+git checkout all-expert-soft-clean
+git pull origin all-expert-soft-clean
 python -m pip install -r requirements.txt
 python scripts/benchmark_chledowski.py --datasets all --dataset-ref 804cf4ca3ba1a2c59d56dfdb1204a96df246cf2b --force
 python scripts/quick_eval_lru_lfu_from_processed.py
@@ -23,6 +23,6 @@ Success:
 
 ```text
 failed datasets = 0
-algorithm contains HedgeFullDelayedSoftClassicAnchor
-compare total misses vs MARK/LRU/LFU
+algorithm contains HedgeFullDelayedAllExpertSoft
+compare total misses vs MARK/LRU/LFU/SoftClassicAnchor
 ```
