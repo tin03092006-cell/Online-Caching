@@ -1,0 +1,11 @@
+requested_dataset,actual_dataset,fallback_used,fallback_reason,source_files,concat_order,number_of_requests,number_of_unique_items,selected_cache_size,format_detected,item_column,split_ratio_train,split_ratio_validation,split_ratio_test,warning,success
+astar,astar,False,,astar_train.csv|astar_valid.csv|astar_test.csv,train -> valid -> test,1442560,5189,51,two_columns_no_header,1,0.8,0.1,0.1,,True
+bwaves,bwaves,False,,bwaves_train.csv|bwaves_valid.csv|bwaves_test.csv,train -> valid -> test,712960,217510,512,two_columns_no_header,1,0.8,0.1,0.1,,True
+cactusadm,cactusadm,False,,cactusadm_train.csv|cactusadm_valid.csv|cactusadm_test.csv,train -> valid -> test,277440,135314,512,two_columns_no_header,1,0.8,0.1,0.1,,True
+gems,gems,False,,gems_train.csv|gems_valid.csv|gems_test.csv,train -> valid -> test,904320,440361,512,two_columns_no_header,1,0.8,0.1,0.1,,True
+lbm,lbm,False,,lbm_train.csv|lbm_valid.csv|lbm_test.csv,train -> valid -> test,977600,769820,512,two_columns_no_header,1,0.8,0.1,0.1,,True
+leslie3d,leslie3d,False,,leslie3d_train.csv|leslie3d_valid.csv|leslie3d_test.csv,train -> valid -> test,895040,43492,434,two_columns_no_header,1,0.8,0.1,0.1,,True
+libq,libq,False,,libq_train.csv|libq_valid.csv|libq_test.csv,train -> valid -> test,724800,16375,163,two_columns_no_header,1,0.8,0.1,0.1,,True
+mcf,mcf,False,,mcf_train.csv|mcf_valid.csv|mcf_test.csv,train -> valid -> test,3706880,861171,512,two_columns_no_header,1,0.8,0.1,0.1,,True
+omnetpp,omnetpp,False,,omnetpp_train.csv|omnetpp_valid.csv|omnetpp_test.csv,train -> valid -> test,694400,23366,233,two_columns_no_header,1,0.8,0.1,0.1,,True
+sphinx3,sphinx3,False,,sphinx3_train.csv|sphinx3_valid.csv|sphinx3_test.csv,train -> valid -> test,410880,6530,65,two_columns_no_header,1,0.8,0.1,0.1,,True

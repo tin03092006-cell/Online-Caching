@@ -10,8 +10,8 @@ from pathlib import Path
 import atexit
 
 # Constraints
-PRIMARY_DATASETS = ["xalanc", "bzip", "milc"]
-FALLBACK_DATASETS = ["mcf", "sphinx3", "astar"]
+PRIMARY_DATASETS = ["astar", "bwaves", "cactusadm", "gems", "lbm", "leslie3d", "libq", "mcf", "omnetpp", "sphinx3"]
+FALLBACK_DATASETS = []
 ARCHIVE_FEATURE_FILES = False
 
 # Paths
@@ -538,17 +538,17 @@ def main():
         f.write("## 7. Final Conclusion\n")
         f.write(f"- Number of successful datasets: {success_count}\n")
         f.write(f"- Number of failed datasets: {len(failed_reqs)}\n")
-        if success_count < 3:
-            f.write("- Status: WARNING: fewer than 3 datasets completed successfully.\n")
+        if success_count < len(PRIMARY_DATASETS):
+            f.write(f"- Status: WARNING: fewer than {len(PRIMARY_DATASETS)} datasets completed successfully.\n")
         else:
-            f.write("- Status: SUCCESS: benchmark completed for 3 datasets.\n")
+            f.write(f"- Status: SUCCESS: benchmark completed for {success_count} datasets.\n")
 
     # Final Verification Checklist
     print("\n--- Final Verification Checklist ---")
     print(f"[{'X' if CHLEDOWSKI_REPO.exists() else ' '}] data/raw/chledowski_repo exists")
     print(f"[{'X' if TRACES_DIR.exists() else ' '}] data/raw/traces/ exists")
     
-    print(f"[{'X' if attempted >= 3 else ' '}] at least 3 datasets were attempted")
+    print(f"[{'X' if attempted >= len(PRIMARY_DATASETS) else ' '}] at least {len(PRIMARY_DATASETS)} datasets were attempted")
     
     print(f"[{'X' if success_count >= 1 else ' '}] at least 1 dataset succeeded")
     print(f"[{'X' if TRACE_REPORT.exists() else ' '}] chledowski_trace_report.csv exists")
@@ -578,10 +578,10 @@ def main():
     print(f"[X] src/model.py was not modified")
     print(f"[X] src/train.py was not modified")
     
-    if success_count < 3:
-        print("\nWARNING: fewer than 3 datasets completed successfully.")
+    if success_count < len(PRIMARY_DATASETS):
+        print(f"\nWARNING: fewer than {len(PRIMARY_DATASETS)} datasets completed successfully.")
     else:
-        print("\nSUCCESS: benchmark completed for 3 datasets.")
+        print(f"\nSUCCESS: benchmark completed for {success_count} datasets.")
 
 if __name__ == "__main__":
     main()

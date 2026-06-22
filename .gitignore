@@ -10,6 +10,7 @@ venv/
 env/
 
 # Raw and processed data
+*.csv
 /data/raw/*
 /data/processed/*
 !/data/raw/.gitkeep
@@ -22,7 +23,6 @@ env/
 /data/raw/trace.txt
 /data/processed/benchmark_runs/*/train_features.csv
 /data/processed/benchmark_runs/*/validation_features.csv
-*.csv
 *.json
 *.jsonl
 *.parquet
