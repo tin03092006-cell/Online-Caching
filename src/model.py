@@ -94,19 +94,6 @@ def choose_lfu_eviction(
     )
 
 
-def choose_fifo_eviction(
-    cache_items: set[str],
-    feature_state: OnlineFeatureState,
-) -> str:
-    return min(
-        cache_items,
-        key=lambda cache_item: (
-            feature_state.cache_insert_times.get(cache_item, -1),
-            cache_item,
-        ),
-    )
-
-
 def choose_mark_eviction(
     cache_items: set[str],
     marked_items: set[str],
@@ -301,7 +288,6 @@ def propose_expert_evictions(
     return {
         "LRU": choose_lru_eviction(cache_items, feature_state),
         "LFU": choose_lfu_eviction(cache_items, feature_state),
-        "FIFO": choose_fifo_eviction(cache_items, feature_state),
         "MARK": choose_mark_eviction(
             cache_items=cache_items,
             marked_items=marked_items,
@@ -337,7 +323,6 @@ def create_initial_expert_weights() -> dict[str, float]:
     return {
         "LRU": 1.0,
         "LFU": 1.0,
-        "FIFO": 1.0,
         "MARK": 1.0,
         "RawML": 1.0,
     }
