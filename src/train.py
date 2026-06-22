@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .train_soft import main
+from .train_all_expert_soft import main
 
 
 if __name__ == "__main__":
