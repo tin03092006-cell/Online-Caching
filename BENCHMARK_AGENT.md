@@ -1,13 +1,23 @@
 # Benchmark Agent Instructions
 
-Run benchmark for the `classic-anchored-hedge` branch.
+Run benchmark for the `classic-anchor-no-fifo` branch.
+
+This branch uses the Classic-Anchored Hedge variant with FIFO removed from the main expert set.
+
+Main expert set:
+
+```text
+LRU + LFU + MARK + RawML
+```
+
+FIFO is intentionally not used as a main expert in this branch. Keep FIFO only for ablation or noisy-expert experiments.
 
 ## 1. Checkout branch
 
 ```bash
 git fetch origin
-git checkout classic-anchored-hedge
-git pull origin classic-anchored-hedge
+git checkout classic-anchor-no-fifo
+git pull origin classic-anchor-no-fifo
 ```
 
 ## 2. Install requirements
@@ -45,7 +55,7 @@ Benchmark is valid if:
 
 ```text
 failed datasets = 0
-summary file contains Belady/OPT, LRU, LFU, MARK, HedgeFullDelayedClassicAnchor
+summary file contains Belady/OPT, LRU, LFU, MARK, HedgeFullDelayedClassicAnchorNoFIFO
 ```
 
 Then compare total cache misses and miss ratio across algorithms.
