@@ -3,7 +3,7 @@
 Dự án tối giản này triển khai pipeline cốt lõi cho bài toán online caching:
 
 ```text
-HedgeFull = Hedge(LRU, LFU, FIFO, MARK, RawML)
+HedgeFull = Hedge(LRU, LFU, MARK, RawML)
 ```
 
 Benchmark chính gồm:
@@ -114,7 +114,7 @@ data/processed/benchmark_results.csv
   - RawML predictor bằng `GradientBoostingRegressor` của scikit-learn.
   - Belady/OPT offline baseline.
   - MARK online baseline.
-  - Các expert nội bộ: LRU, LFU, FIFO, MARK, RawML.
+  - Các expert nội bộ: LRU, LFU, MARK, RawML.
   - Hedge Full với delayed feedback. Khi expert đề xuất evict một item,
     quyết định đó được lưu lại. Loss chỉ được cập nhật khi item đó thật sự
     xuất hiện lại trong request stream:
