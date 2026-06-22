@@ -118,9 +118,7 @@ def load_request_trace(trace_path: Path) -> list[str]:
 
     trace_text = trace_path.read_text(encoding="utf-8")
     request_items = [
-        item.strip()
-        for item in re.split(r"[\s,]+", trace_text)
-        if item.strip()
+        item.strip() for item in re.split(r"[\s,]+", trace_text) if item.strip()
     ]
 
     if not request_items:

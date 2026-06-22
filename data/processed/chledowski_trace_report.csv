@@ -9,3 +9,6 @@ libq,libq,False,,libq_train.csv|libq_valid.csv|libq_test.csv,train -> valid -> t
 mcf,mcf,False,,mcf_train.csv|mcf_valid.csv|mcf_test.csv,train -> valid -> test,3706880,861171,512,two_columns_no_header,1,0.8,0.1,0.1,,True
 omnetpp,omnetpp,False,,omnetpp_train.csv|omnetpp_valid.csv|omnetpp_test.csv,train -> valid -> test,694400,23366,233,two_columns_no_header,1,0.8,0.1,0.1,,True
 sphinx3,sphinx3,False,,sphinx3_train.csv|sphinx3_valid.csv|sphinx3_test.csv,train -> valid -> test,410880,6530,65,two_columns_no_header,1,0.8,0.1,0.1,,True
+xalanc,xalanc,False,,xalanc_train.csv|xalanc_valid.csv|xalanc_test.csv,train -> valid -> test,86400,24182,241,two_columns_no_header,1,0.8,0.1,0.1,,True
+bzip,bzip,False,,bzip_train.csv|bzip_valid.csv|bzip_test.csv,train -> valid -> test,209600,35526,355,two_columns_no_header,1,0.8,0.1,0.1,,True
+milc,milc,False,,milc_train.csv|milc_valid.csv|milc_test.csv,train -> valid -> test,696000,258588,512,two_columns_no_header,1,0.8,0.1,0.1,,True
