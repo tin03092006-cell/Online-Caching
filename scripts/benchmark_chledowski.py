@@ -152,13 +152,10 @@ def reset_run_dir_for_failure(run_dir: Path) -> None:
                 shutil.rmtree(item)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-def get_code_hashes():
-    hashes = {}
-    for f in ["src/model.py", "src/train.py", "src/data.py", "scripts/benchmark_chledowski.py"]:
-        p = PROJECT_ROOT / f
-        if p.exists():
-            hashes[f] = hash_file(p)
-    return hashes
+def ensure_empty_logs(stdout_file: Path, stderr_file: Path) -> None:
+    stdout_file.parent.mkdir(parents=True, exist_ok=True)
+    stdout_file.touch()
+    stderr_file.touch()
 
 def infer_format_and_parse(file_path: Path):
     try:
@@ -391,8 +388,9 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
     
     if not valid_dfiles:
         reset_run_dir_for_failure(run_dir)
+        ensure_empty_logs(stdout_file, stderr_file)
         failure_metadata = {
-            "project_commit": project_commit, "project_dirty": project_dirty, "dataset_commit": commit_hash,
+            "project_commit": project_commit, "dataset_commit": commit_hash,
             "dataset_ref_requested": args.dataset_ref or "unpinned", "code_hashes": code_hashes,
             "dataset": dataset, "split_mode": args.split_mode, "failure_stage": "discovery", "error_message": "No valid trace files found"
         }
@@ -417,8 +415,9 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
 
     if actual_split_mode == "official" and not has_official:
         reset_run_dir_for_failure(run_dir)
+        ensure_empty_logs(stdout_file, stderr_file)
         failure_metadata = {
-            "project_commit": project_commit, "project_dirty": project_dirty, "dataset_commit": commit_hash,
+            "project_commit": project_commit, "dataset_commit": commit_hash,
             "dataset_ref_requested": args.dataset_ref or "unpinned", "code_hashes": code_hashes,
             "dataset": dataset, "split_mode": actual_split_mode, "failure_stage": "split_selection", "error_message": "Official split requested but missing"
         }
@@ -486,7 +485,6 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
 
     metadata = {
         "project_commit": project_commit,
-        "project_dirty": project_dirty,
         "dataset_commit": commit_hash,
         "dataset_ref_requested": args.dataset_ref or "unpinned",
         "code_hashes": code_hashes,
@@ -625,6 +623,8 @@ def main():
                 results.append(future.result())
             except Exception as exc:
                 print(f"[FAIL] {ds} Unhandled worker exception")
+                run_dir = BENCHMARK_RUNS_DIR / ds
+                ensure_empty_logs(run_dir / "stdout.log", run_dir / "stderr.log")
                 results.append({
                     "dataset": ds, "success": False, "error_message": f"Unhandled worker exception: {exc}", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
                     "split_mode": args.split_mode, "discovery_records": [], "trace_report_info": make_trace_report_info(ds, False, args.split_mode, [], "", warning=f"Unhandled worker exception: {exc}")
