@@ -111,12 +111,17 @@ def choose_mark_eviction(
     cache_items: set[str],
     marked_items: set[str],
     random_generator: random.Random,
+    *,
+    mutate_phase: bool = True,
 ) -> str:
     unmarked_items = sorted(cache_items - marked_items)
 
     if not unmarked_items:
-        marked_items.clear()
-        unmarked_items = sorted(cache_items)
+        if mutate_phase:
+            marked_items.clear()
+            unmarked_items = sorted(cache_items)
+        else:
+            unmarked_items = sorted(cache_items)
 
     return random_generator.choice(unmarked_items)
 
@@ -301,6 +306,7 @@ def propose_expert_evictions(
             cache_items=cache_items,
             marked_items=marked_items,
             random_generator=random_generator,
+            mutate_phase=False,
         ),
         "RawML": choose_raw_ml_eviction(
             cache_items=cache_items,

@@ -11,6 +11,7 @@ import torch
 
 from .data import (
     TARGET_COLUMN,
+    TraceSplits,
     build_training_frame,
     load_config,
     load_request_trace,
@@ -51,6 +52,23 @@ def resolve_project_path(project_root: Path, path_text: str) -> Path:
     if candidate_path.is_absolute():
         return candidate_path
     return project_root / candidate_path
+
+
+def load_trace_splits_from_config(config: dict[str, Any], project_root: Path) -> TraceSplits:
+    paths = config["paths"]
+    if "train_trace" in paths and "validation_trace" in paths and "test_trace" in paths:
+        return TraceSplits(
+            train=load_request_trace(resolve_project_path(project_root, paths["train_trace"])),
+            validation=load_request_trace(resolve_project_path(project_root, paths["validation_trace"])),
+            test=load_request_trace(resolve_project_path(project_root, paths["test_trace"])),
+        )
+
+    request_trace = load_request_trace(resolve_project_path(project_root, paths["raw_trace"]))
+    return split_trace(
+        request_trace=request_trace,
+        train_ratio=float(config["data"]["train_ratio"]),
+        validation_ratio=float(config["data"]["validation_ratio"]),
+    )
 
 
 def require_positive_cache_size(cache_size: int) -> None:
@@ -132,15 +150,9 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
 
     recent_window_size = int(config["data"]["recent_window_size"])
     max_training_rows = int(config["data"]["max_training_rows"])
-    raw_trace_path = resolve_project_path(project_root, config["paths"]["raw_trace"])
     processed_dir = resolve_project_path(project_root, config["paths"]["processed_dir"])
 
-    request_trace = load_request_trace(raw_trace_path)
-    trace_splits = split_trace(
-        request_trace=request_trace,
-        train_ratio=float(config["data"]["train_ratio"]),
-        validation_ratio=float(config["data"]["validation_ratio"]),
-    )
+    trace_splits = load_trace_splits_from_config(config, project_root)
 
     training_frame = build_training_frame(
         request_trace=trace_splits.train,
