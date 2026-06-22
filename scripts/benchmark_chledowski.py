@@ -356,7 +356,7 @@ def previous_run_succeeded(run_status_file: Path) -> bool:
     text = run_status_file.read_text(encoding="utf-8")
     return "success: True" in text and "return_code: 0" in text
 
-def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, project_dirty, base_config):
+def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, base_config):
     run_dir = BENCHMARK_RUNS_DIR / dataset
     prepared_dir = run_dir / "_prepared"
     run_status_file = run_dir / "run_status.txt"
@@ -516,6 +516,7 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
         try:
             with open(metadata_file, "r") as mf:
                 old_meta = json.load(mf)
+            old_meta.pop("project_dirty", None)
             if old_meta == metadata and previous_run_succeeded(run_status_file):
                 trace_report_info["success"] = True
                 print(f"[DONE] {dataset} (skipped_due_to_cache)")
@@ -616,7 +617,7 @@ def main():
 
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_dataset = {executor.submit(process_dataset, ds, args, commit_hash, code_hashes, project_commit, project_dirty, base_config): ds for ds in datasets}
+        future_to_dataset = {executor.submit(process_dataset, ds, args, commit_hash, code_hashes, project_commit, base_config): ds for ds in datasets}
         for future in as_completed(future_to_dataset):
             ds = future_to_dataset[future]
             try:
