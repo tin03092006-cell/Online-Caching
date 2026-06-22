@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .classic_anchor import (
+    run_hedge_full_cache,
+    select_best_hedge_learning_rate,
+)
 from .data import (
     TARGET_COLUMN,
     TraceSplits,
@@ -23,9 +27,7 @@ from .model import (
     CacheRunResult,
     RawMLPredictor,
     count_belady_misses,
-    run_hedge_full_cache,
     run_mark_cache,
-    select_best_hedge_learning_rate,
 )
 
 
@@ -37,7 +39,7 @@ def set_seed(seed: int) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train and benchmark Hedge Full for online caching."
+        description="Train and benchmark Classic-Anchored Hedge Full for online caching."
     )
     parser.add_argument(
         "--config",
