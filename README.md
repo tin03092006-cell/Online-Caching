@@ -1,20 +1,17 @@
-# Minimal Hedge Full for ML-Augmented Online Caching
+# Hedge Cache: All Expert Soft Anchor
 
-Dự án tối giản này triển khai pipeline cốt lõi cho bài toán online caching:
+Dự án này triển khai pipeline cốt lõi cho bài toán **Online Caching** được tăng cường bằng Machine Learning. Phiên bản hiện tại trên nhánh `main` sử dụng thuật toán tối ưu nhất: **`HedgeFullDelayedAllExpertSoft`**.
 
-```text
-HedgeFull = Hedge(LRU, LFU, MARK, RawML)
-```
+## 1. Kiến trúc thuật toán cốt lõi
 
-Benchmark chính gồm:
+Thuật toán kết hợp sức mạnh của nhiều chuyên gia (experts) khác nhau thông qua cơ chế học máy online (Hedge):
+- **Các chuyên gia tham gia:** `LRU`, `LFU`, `MARK`, và `RawML` (Gradient Boosting Regressor).
+- **Delayed Feedback:** Loss của một chuyên gia chỉ được cập nhật khi quyết định đẩy (evict) của chuyên gia đó được hệ thống nhìn thấy lại trong tương lai (khi cache miss xảy ra).
+- **All Expert Soft Anchor:** Thay vì chỉ chọn ngẫu nhiên một chuyên gia, thuật toán lấy mẫu tỷ lệ (soft sampling) dựa trên trọng số Hedge của *tất cả* các chuyên gia để đưa ra quyết định eviction tập thể tối ưu nhất. Cơ chế này đã đánh bại cả LFU trên các dataset phức tạp (như `mcf`, `xalanc`).
 
-```text
-Belady/OPT vs MARK vs HedgeFull
-```
+## 2. Cài đặt môi trường
 
-## 1. Cài đặt môi trường
-
-Khuyến nghị dùng Python 3.10+.
+Khuyến nghị sử dụng Python 3.10+.
 
 ```bash
 python -m venv .venv
@@ -23,117 +20,39 @@ source .venv/bin/activate      # Linux/macOS
 pip install -r requirements.txt
 ```
 
-Định dạng code bằng Ruff:
+## 3. Chạy tự động Benchmark (Chledowski Datasets)
 
+Dự án cung cấp bộ script tự động tải, tiền xử lý và chạy mô phỏng thuật toán trên các dataset chuẩn.
+
+**Bước 1:** Chạy benchmark trên toàn bộ các dataset (có thể chọn 1 dataset qua `--datasets mcf`):
 ```bash
-python -m ruff format src
-python -m ruff check src
+python scripts/benchmark_chledowski.py --datasets all --dataset-ref 804cf4ca3ba1a2c59d56dfdb1204a96df246cf2b
 ```
 
-## 2. Chuẩn bị dataset
-
-Bạn cần tự đặt request trace vào:
-
-```text
-data/raw/trace.txt
+**Bước 2:** Chạy script đánh giá phụ để bổ sung baseline (LRU/LFU) vào báo cáo cuối cùng:
+```bash
+python scripts/quick_eval_lru_lfu_from_processed.py
 ```
 
-Format tối giản: một request item trên một dòng, hoặc các item cách nhau bởi khoảng trắng/dấu phẩy.
+Kết quả cuối cùng sẽ được gộp và lưu tại:
+- `data/processed/summary_all_datasets.csv`
+- `data/processed/RUN_REPORT.md`
 
-Ví dụ:
+## 4. Cấu trúc thư mục
 
-```text
-A
-B
-C
-A
-D
-B
-```
+- `src/`: Chứa mã nguồn cốt lõi.
+  - `data.py`: Trích xuất feature (recency, frequency, v.v...) và sinh label.
+  - `model.py`: Chứa các baseline (Belady/OPT, MARK, LRU, LFU, RawML).
+  - `soft_classic_anchor.py`: Thuật toán lõi `HedgeFullDelayedAllExpertSoft`.
+  - `train_soft.py`: Pipeline gom nối từ data, model đến simulation.
+- `scripts/`: Chứa mã nguồn tự động hóa benchmark.
+- `configs/`: Chứa `config.yaml` định nghĩa các hyperparameter (ví dụ: `cache_size`, `candidate_learning_rates`).
 
-Hoặc:
+## 5. Chỉnh sửa cấu hình thủ công
 
-```text
-A B C A D B
-```
-
-Không push dữ liệu gốc lên Git. Thư mục `data/raw/` đã được chặn trong `.gitignore`.
-
-## 3. Chỉnh cấu hình
-
-Mọi hyperparameter và path nằm trong:
-
-```text
-configs/config.yaml
-```
-
-Các giá trị quan trọng nhất cần chỉnh:
-
-```yaml
-cache:
-  cache_size: 100
-
-data:
-  train_ratio: 0.6
-  validation_ratio: 0.2
-  recent_window_size: 128
-  max_training_rows: 50000
-
-hedge:
-  candidate_learning_rates: [0.1, 0.3, 0.7, 1.0]
-```
-
-Nếu trace nhỏ, hãy giảm `cache.cache_size`, nếu không có thể không tạo được feature train.
-
-## 4. Chạy pipeline
-
-Từ thư mục gốc của project:
+Nếu bạn không chạy benchmark tự động mà muốn chạy thử nghiệm đơn lẻ, bạn có thể tự chỉnh sửa file `configs/config.yaml` và chạy lệnh sau:
 
 ```bash
 python -m src.train --config configs/config.yaml
 ```
-
-Sau khi chạy, kết quả được lưu vào:
-
-```text
-data/processed/train_features.csv
-data/processed/validation_features.csv
-data/processed/benchmark_results.csv
-```
-
-## 5. Logic đã triển khai
-
-- `src/data.py`
-  - Đọc request trace.
-  - Chia train/validation/test theo thời gian.
-  - Tạo feature cho RawML: `recency`, `frequency`, `recent_frequency`,
-    `average_inter_arrival`, `cache_age`.
-  - Tạo label `target_next_distance`.
-
-- `src/model.py`
-  - RawML predictor bằng `GradientBoostingRegressor` của scikit-learn.
-  - Belady/OPT offline baseline.
-  - MARK online baseline.
-  - Các expert nội bộ: LRU, LFU, MARK, RawML.
-  - Hedge Full với delayed feedback. Khi expert đề xuất evict một item,
-    quyết định đó được lưu lại. Loss chỉ được cập nhật khi item đó thật sự
-    xuất hiện lại trong request stream:
-
-```text
-w_i <- w_i * exp(-eta * loss_i)
-loss_i = 1 / (1 + feedback_delay)
-```
-
-- `src/train.py`
-  - Load config.
-  - Cố định seed.
-  - Train RawML.
-  - Chọn eta trên validation.
-  - Benchmark trên test.
-  - In và lưu kết quả.
-
-## 6. Lưu ý nghiên cứu
-
-Bản này là phiên bản tối giản để có pipeline chạy được. Nó cố ý không chứa logging phức tạp, plotting, notebook, CLI nhiều chế độ, hoặc nhiều model phụ.
-
-Hedge Full trong bản này đã dùng delayed feedback. Trong quá trình benchmark, phần online của Hedge không gọi `next_distance` để cập nhật trọng số. `next_distance` chỉ còn được dùng ở hai nơi hợp lệ: tạo label offline cho RawML trên tập train/validation và tính Belady/OPT làm chuẩn offline.
+Dữ liệu raw test cần được đặt tại `data/raw/trace.txt` (mỗi dòng 1 request). Kết quả sẽ được xuất ra thư mục `data/processed/`.
