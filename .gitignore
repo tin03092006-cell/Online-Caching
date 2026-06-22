@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Raw and processed data
+/data/raw/*
+/data/processed/*
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/processed/chledowski_trace_report.csv
+!/data/processed/summary_all_datasets.csv
+!/data/processed/RUN_REPORT.md
+/data/raw/chledowski_repo/
+/data/raw/traces/
+/data/raw/trace.txt
+/data/processed/benchmark_runs/*/train_features.csv
+/data/processed/benchmark_runs/*/validation_features.csv
+*.csv
+*.json
+*.jsonl
+*.parquet
+*.npy
+*.npz
+
+# Model artifacts
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.onnx
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
