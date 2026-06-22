@@ -125,6 +125,41 @@ def get_code_hashes():
             hashes[f] = hash_file(p)
     return hashes
 
+def resolve_project_path(path_text: str) -> Path:
+    path = Path(path_text)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+def write_run_status_file(run_status_file: Path, run_status: dict) -> None:
+    run_status_file.parent.mkdir(parents=True, exist_ok=True)
+    with run_status_file.open("w", encoding="utf-8") as f:
+        for k, v in run_status.items():
+            if k not in ["trace_report_info", "discovery_records"]:
+                f.write(f"{k}: {v}\n")
+
+def write_metadata_file(metadata_file: Path, metadata: dict) -> None:
+    metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    with metadata_file.open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+def reset_run_dir_for_failure(run_dir: Path) -> None:
+    if run_dir.exists():
+        for item in run_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+def get_code_hashes():
+    hashes = {}
+    for f in ["src/model.py", "src/train.py", "src/data.py", "scripts/benchmark_chledowski.py"]:
+        p = PROJECT_ROOT / f
+        if p.exists():
+            hashes[f] = hash_file(p)
+    return hashes
+
 def infer_format_and_parse(file_path: Path):
     try:
         with file_path.open("r", encoding="utf-8") as f:
@@ -225,8 +260,9 @@ def infer_format_and_parse(file_path: Path):
 
 def discover_dataset_files(dataset_name):
     if not DATASETS_DIR.exists(): return []
-    rejected_words = ["readme", "summary", "stats", "stat", "metadata", "report", "result", "log", "png", "jpg", "pdf", "md", "json", "yaml", "yml"]
-    allowed_exts = [".txt", ".csv", ".tsv", ".trace", ".dat"]
+    rejected_words = ["readme", "summary", "stats", "stat", "metadata", "report", "result", "log", "png", "jpg", "pdf", "json", "yaml", "yml"]
+    blocked_exts = {".md", ".json", ".yaml", ".yml", ".png", ".jpg", ".jpeg", ".pdf"}
+    allowed_exts = {".txt", ".csv", ".tsv", ".trace", ".dat"}
     candidates = []
     
     for p in DATASETS_DIR.rglob("*"):
@@ -234,11 +270,15 @@ def discover_dataset_files(dataset_name):
             continue
         
         lower_name = p.name.lower()
+        ext = p.suffix.lower()
         if any(w in lower_name for w in rejected_words):
             candidates.append((p, False, "Contains rejected keyword"))
             continue
             
-        ext = p.suffix.lower()
+        if ext in blocked_exts:
+            candidates.append((p, False, f"Extension {ext} blocked"))
+            continue
+            
         if ext and ext not in allowed_exts:
             candidates.append((p, False, f"Extension {ext} not allowed"))
             continue
@@ -350,11 +390,20 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
     rejected_files_str = "|".join(f"{p.name}:{reason}" for p, reason in rejected_records)
     
     if not valid_dfiles:
-        return {
-            "dataset": dataset, "success": False, "error_message": "No valid trace files found", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
-            "split_mode": args.split_mode, "discovery_records": discovery_records,
-            "trace_report_info": make_trace_report_info(dataset, False, args.split_mode, [], rejected_files_str, warning="No valid trace files found")
+        reset_run_dir_for_failure(run_dir)
+        failure_metadata = {
+            "project_commit": project_commit, "project_dirty": project_dirty, "dataset_commit": commit_hash,
+            "dataset_ref_requested": args.dataset_ref or "unpinned", "code_hashes": code_hashes,
+            "dataset": dataset, "split_mode": args.split_mode, "failure_stage": "discovery", "error_message": "No valid trace files found"
         }
+        write_metadata_file(metadata_file, failure_metadata)
+        trace_info = make_trace_report_info(dataset, False, args.split_mode, [], rejected_files_str, warning="No valid trace files found")
+        run_status = {
+            "dataset": dataset, "success": False, "error_message": "No valid trace files found", "return_code": -1, "runtime_seconds": 0.0,
+            "skipped_due_to_cache": False, "split_mode": args.split_mode, "discovery_records": discovery_records, "trace_report_info": trace_info
+        }
+        write_run_status_file(run_status_file, run_status)
+        return run_status
 
     train_dfiles = [f for f in valid_dfiles if f.split == "train"]
     valid_split_dfiles = [f for f in valid_dfiles if f.split == "validation"]
@@ -367,13 +416,24 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
         actual_split_mode = "official" if has_official else "ratio"
 
     if actual_split_mode == "official" and not has_official:
-        return {
-            "dataset": dataset, "success": False, "error_message": "Official split requested but files not found", "return_code": -1, "runtime_seconds": 0.0, "skipped_due_to_cache": False,
-            "split_mode": actual_split_mode, "discovery_records": discovery_records,
-            "trace_report_info": make_trace_report_info(dataset, False, actual_split_mode, valid_dfiles, rejected_files_str, warning="Official split requested but missing")
+        reset_run_dir_for_failure(run_dir)
+        failure_metadata = {
+            "project_commit": project_commit, "project_dirty": project_dirty, "dataset_commit": commit_hash,
+            "dataset_ref_requested": args.dataset_ref or "unpinned", "code_hashes": code_hashes,
+            "dataset": dataset, "split_mode": actual_split_mode, "failure_stage": "split_selection", "error_message": "Official split requested but missing"
         }
+        write_metadata_file(metadata_file, failure_metadata)
+        trace_info = make_trace_report_info(dataset, False, actual_split_mode, valid_dfiles, rejected_files_str, warning="Official split requested but missing")
+        run_status = {
+            "dataset": dataset, "success": False, "error_message": "Official split requested but missing", "return_code": -1, "runtime_seconds": 0.0,
+            "skipped_due_to_cache": False, "split_mode": actual_split_mode, "discovery_records": discovery_records, "trace_report_info": trace_info
+        }
+        write_run_status_file(run_status_file, run_status)
+        return run_status
 
-    prepared_dir.mkdir(parents=True, exist_ok=True)
+    if prepared_dir.exists():
+        shutil.rmtree(prepared_dir)
+    prepared_dir.mkdir(parents=True, exist_ok=False)
 
     trace_hashes = {}
     if actual_split_mode == "official":
@@ -418,18 +478,22 @@ def process_dataset(dataset, args, commit_hash, code_hashes, project_commit, pro
         config_dict["paths"]["raw_trace"] = str(run_dir / "trace.txt")
 
     config_hash = hashlib.sha256(json.dumps(config_dict, sort_keys=True).encode()).hexdigest()
-    base_config_hash = hash_file(Path(args.base_config))
+    
+    # base_config is already passed in as a loaded dict, but we should hash the path
+    # base_config_path is derived from args.base_config but passed in main
+    base_config_path = resolve_project_path(args.base_config)
+    base_config_hash = hash_file(base_config_path)
 
     metadata = {
         "project_commit": project_commit,
         "project_dirty": project_dirty,
         "dataset_commit": commit_hash,
         "dataset_ref_requested": args.dataset_ref or "unpinned",
-        "code_hash": code_hashes.get("scripts/benchmark_chledowski.py", ""),
+        "code_hashes": code_hashes,
         "config_hash": config_hash,
-        "base_config_path": args.base_config,
+        "base_config_path": str(base_config_path),
         "base_config_hash": base_config_hash,
-        "source_file_hashes": code_hashes,
+        "dataset_source_file_hashes": {str(dfile.path): hash_file(dfile.path) for dfile in valid_dfiles},
         "trace_hashes": trace_hashes,
         "dataset": dataset,
         "split_mode": actual_split_mode,
@@ -545,7 +609,8 @@ def main():
     project_commit = get_project_commit()
     project_dirty = get_project_dirty()
 
-    with open(args.base_config, "r", encoding="utf-8") as f:
+    base_config_path = resolve_project_path(args.base_config)
+    with base_config_path.open("r", encoding="utf-8") as f:
         base_config = yaml.safe_load(f)
 
     datasets = PRIMARY_DATASETS if args.datasets == "all" else args.datasets.split(",")
@@ -598,12 +663,12 @@ def main():
                             summary_results.append(row)
 
     summary_results.sort(key=lambda x: (datasets.index(x["dataset"]) if x["dataset"] in datasets else 999, x["algorithm"]))
-    if summary_results:
-        fieldnames = ["dataset", "algorithm", "cache_misses", "total_requests", "miss_ratio", "empirical_competitive_ratio", "improvement_vs_mark_percent", "selected_cache_size", "split_mode", "seed", "selected_hedge_learning_rate", "validation_mae"]
-        with open(SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(summary_results)
+    
+    fieldnames = ["dataset", "algorithm", "cache_misses", "total_requests", "miss_ratio", "empirical_competitive_ratio", "improvement_vs_mark_percent", "selected_cache_size", "split_mode", "seed", "selected_hedge_learning_rate", "validation_mae"]
+    with open(SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(summary_results)
 
     run_status_keys = ["dataset", "success", "return_code", "runtime_seconds", "config_path", "metadata_path", "stdout_log", "stderr_log", "error_message", "skipped_due_to_cache"]
     with open(RUN_STATUS_CSV, "w", newline="", encoding="utf-8") as f:
