@@ -77,14 +77,6 @@ class RecentExpertLossTracker:
         return anchor_loss <= best_loss + CLASSIC_ANCHOR_MARGIN
 
 
-def filter_active_expert_votes(expert_votes: dict[str, str]) -> dict[str, str]:
-    return {
-        expert_name: evicted_item
-        for expert_name, evicted_item in expert_votes.items()
-        if expert_name in ACTIVE_EXPERTS
-    }
-
-
 def choose_classic_anchored_eviction(
     expert_votes: dict[str, str],
     expert_weights: dict[str, float],
@@ -112,9 +104,6 @@ def apply_observed_feedback_with_losses(
     observed_losses: list[tuple[str, float]] = []
 
     for pending_vote in observed_votes:
-        if pending_vote.expert_name not in expert_weights:
-            continue
-
         feedback_delay = current_index - pending_vote.decision_index
         expert_loss = 1.0 / (1.0 + float(feedback_delay))
         expert_weights[pending_vote.expert_name] *= math.exp(
@@ -161,15 +150,13 @@ def run_hedge_full_cache(
         if request_item not in cache_items:
             cache_misses += 1
             if len(cache_items) >= cache_size:
-                expert_votes = filter_active_expert_votes(
-                    propose_expert_evictions(
-                        cache_items=cache_items,
-                        feature_state=feature_state,
-                        marked_items=marked_items,
-                        current_index=current_index,
-                        predictor=predictor,
-                        random_generator=random_generator,
-                    )
+                expert_votes = propose_expert_evictions(
+                    cache_items=cache_items,
+                    feature_state=feature_state,
+                    marked_items=marked_items,
+                    current_index=current_index,
+                    predictor=predictor,
+                    random_generator=random_generator,
                 )
                 evicted_item = choose_classic_anchored_eviction(
                     expert_votes=expert_votes,
@@ -195,7 +182,7 @@ def run_hedge_full_cache(
         )
 
     return CacheRunResult(
-        algorithm_name=f"HedgeFullDelayedClassicAnchorNoFIFO(eta={hedge_learning_rate})",
+        algorithm_name=f"HedgeFullDelayedClassicAnchor(eta={hedge_learning_rate})",
         cache_misses=cache_misses,
         total_requests=trace_length,
     )
