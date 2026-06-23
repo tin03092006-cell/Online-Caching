@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data import OnlineFeatureState, load_request_trace, split_trace
-from src.model import choose_lru_eviction, choose_lfu_eviction
+from src.model import choose_lfu_eviction, choose_lru_eviction
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,9 +115,11 @@ def run_single_policy_cache(
                 )
                 cache_items.remove(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         feature_state.update_after_request(
             request_item=request_item,
