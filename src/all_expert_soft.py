@@ -13,15 +13,16 @@ from .model import (
     PendingExpertVote,
     RawMLPredictor,
     choose_weighted_eviction,
+    normalize_expert_weights,
     propose_expert_evictions,
     store_pending_feedback,
 )
 
 
-ACTIVE_EXPERTS = ("LRU", "LFU", "MARK", "RawML")
+EXPERTS = ("LRU", "LFU", "MARK", "RawML")
 RECENT_LOSS_WINDOW_SIZE = 512
-ALL_EXPERT_SOFT_MIN_FEEDBACK_COUNT = 8
-ALL_EXPERT_SOFT_BETA = 2.0
+MIN_FEEDBACK_COUNT = 8
+SOFT_BETA = 2.0
 
 
 @dataclass
@@ -35,7 +36,7 @@ class RecentExpertLossTracker:
             max_window_size=max_window_size,
             losses={
                 expert_name: deque(maxlen=max_window_size)
-                for expert_name in ACTIVE_EXPERTS
+                for expert_name in EXPERTS
             },
         )
 
@@ -47,7 +48,7 @@ class RecentExpertLossTracker:
         return len(self.losses.get(expert_name, ()))
 
     def is_ready(self, expert_name: str) -> bool:
-        return self.feedback_count(expert_name) >= ALL_EXPERT_SOFT_MIN_FEEDBACK_COUNT
+        return self.feedback_count(expert_name) >= MIN_FEEDBACK_COUNT
 
     def mean_loss(self, expert_name: str) -> float:
         expert_losses = self.losses.get(expert_name)
@@ -62,11 +63,11 @@ def build_all_expert_soft_weights(
 ) -> dict[str, float]:
     adjusted_weights = dict(expert_weights)
 
-    for expert_name in ACTIVE_EXPERTS:
+    for expert_name in EXPERTS:
         if not recent_loss_tracker.is_ready(expert_name):
             continue
         recent_loss = recent_loss_tracker.mean_loss(expert_name)
-        adjusted_weights[expert_name] *= math.exp(-ALL_EXPERT_SOFT_BETA * recent_loss)
+        adjusted_weights[expert_name] *= math.exp(-SOFT_BETA * recent_loss)
 
     return adjusted_weights
 
@@ -104,11 +105,14 @@ def apply_observed_feedback_with_losses(
         )
         observed_losses.append((pending_vote.expert_name, expert_loss))
 
+    if observed_votes:
+        normalize_expert_weights(expert_weights)
+
     return observed_losses
 
 
 def create_initial_expert_weights() -> dict[str, float]:
-    return {expert_name: 1.0 for expert_name in ACTIVE_EXPERTS}
+    return {expert_name: 1.0 for expert_name in EXPERTS}
 
 
 def run_hedge_full_cache(
@@ -164,9 +168,11 @@ def run_hedge_full_cache(
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         marked_items.add(request_item)
         feature_state.update_after_request(
@@ -175,7 +181,7 @@ def run_hedge_full_cache(
         )
 
     return CacheRunResult(
-        algorithm_name=f"HedgeFullDelayedAllExpertSoft(eta={hedge_learning_rate},beta={ALL_EXPERT_SOFT_BETA})",
+        algorithm_name=f"HedgeFullDelayedAllExpertSoft(eta={hedge_learning_rate},beta={SOFT_BETA})",
         cache_misses=cache_misses,
         total_requests=trace_length,
     )
