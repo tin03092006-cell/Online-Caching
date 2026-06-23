@@ -13,6 +13,7 @@ from .model import (
     PendingExpertVote,
     RawMLPredictor,
     choose_weighted_eviction,
+    normalize_expert_weights,
     propose_expert_evictions,
     store_pending_feedback,
 )
@@ -142,6 +143,9 @@ def apply_observed_feedback_with_losses(
         )
         observed_losses.append((pending_vote.expert_name, expert_loss))
 
+    if observed_votes:
+        normalize_expert_weights(expert_weights)
+
     return observed_losses
 
 
@@ -202,9 +206,11 @@ def run_hedge_full_cache(
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         marked_items.add(request_item)
         feature_state.update_after_request(
