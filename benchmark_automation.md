@@ -18,6 +18,7 @@ Kiểm tra branch:
 
 ```bash
 git checkout fix-lfu-mark-weight
+git pull
 git status
 ```
 
@@ -45,7 +46,7 @@ grep -R "cache_access_counts" -n src scripts || true
 grep -R "normalize_expert_weights" -n src scripts || true
 ```
 
-Nếu entrypoint đang dùng `src/all_expert_soft.py`, kiểm tra file này riêng. Nếu nó chưa có `cache_access_counts` và `normalize_expert_weights`, phải sửa trước khi benchmark.
+Nếu entrypoint đang dùng `src/all_expert_soft.py`, kiểm tra file này riêng. File đó cũng phải có `cache_access_counts` và `normalize_expert_weights`.
 
 ---
 
@@ -60,6 +61,8 @@ Nếu lỗi, sửa trước khi chạy benchmark.
 ---
 
 ## Chạy smoke test
+
+Smoke test chỉ chạy 1 dataset, nên để `--jobs 1` cho dễ đọc log.
 
 ```bash
 python scripts/benchmark_chledowski.py \
@@ -82,23 +85,34 @@ python scripts/quick_eval_lru_lfu_from_processed.py \
   --output-summary data/processed/summary_all_datasets_with_lru_lfu.csv
 ```
 
-Kiểm tra có file:
-
-```text
-data/processed/summary_all_datasets.csv
-data/processed/summary_all_datasets_with_lru_lfu.csv
-data/processed/RUN_REPORT.md
-```
-
 ---
 
-## Chạy full benchmark
+## Chạy full benchmark song song CPU
+
+Full benchmark phải dùng nhiều nhân CPU. Script sẽ chạy song song theo dataset.
+
+Dùng `--jobs auto` để lấy số worker theo số CPU core:
 
 ```bash
 python scripts/benchmark_chledowski.py \
   --datasets all \
   --force \
-  --jobs 1 \
+  --jobs auto \
+  --split-mode ratio \
+  --cache-mode ratio \
+  --cache-ratio 0.01 \
+  --min-cache-size 16 \
+  --max-cache-size 512 \
+  --timeout-seconds 3600
+```
+
+Nếu máy yếu hoặc bị lag, dùng số worker cố định:
+
+```bash
+python scripts/benchmark_chledowski.py \
+  --datasets all \
+  --force \
+  --jobs 4 \
   --split-mode ratio \
   --cache-mode ratio \
   --cache-ratio 0.01 \
