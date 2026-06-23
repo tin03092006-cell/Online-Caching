@@ -1,0 +1,367 @@
+% !TEX program = xelatex
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setmonofont{DejaVu Sans Mono}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{titlesec}
+
+\definecolor{ink}{HTML}{1F2937}
+\hypersetup{colorlinks=true, linkcolor=ink, urlcolor=ink}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\renewcommand{\arraystretch}{1.15}
+\titleformat{\section}{\Large\bfseries\sffamily\color{ink}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries\sffamily\color{ink}}{\thesubsection}{0.7em}{}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\hedge}{\code{HedgeFullDelayedAllExpertSoft}}
+\newcommand{\rawml}{\code{RawML}}
+\newcommand{\mr}{\mathrm{MR}}
+
+\title{\bfseries\sffamily Đặc tả thuật toán và phân tích các expert trong Online Caching}
+\author{Dự án \code{tin03092006-cell/Online-Caching}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Mục đích của phụ lục}
+
+Phụ lục này bổ sung cho báo cáo chính phần giải thích chi tiết về thuật toán \hedge{}, bao gồm: đầu vào--đầu ra của thuật toán, cách chuẩn hóa interface chung cho các expert, cách LRU, LFU, MARK và \rawml{} hoạt động, bảo đảm toán học nào có thể khẳng định, điểm mạnh/yếu của từng expert và lý do đưa chúng vào Hedge.
+
+Điểm cần nhấn mạnh: trong online caching, ``đúng đắn'' có nhiều mức khác nhau. Một thuật toán có thể đúng theo nghĩa luôn giữ cache hợp lệ, nhưng không có nghĩa là tối ưu. Belady/OPT tối ưu nếu biết tương lai; MARK có bảo đảm cạnh tranh trong mô hình paging online; \rawml{} chỉ là expert học máy nên không có bảo đảm tối ưu cache. Hedge có bảo đảm regret so với expert tốt nhất trong lớp expert, không phải bảo đảm thắng mọi expert trên mọi dataset.
+
+\section{Input và output của toàn bộ thuật toán}
+
+Một lần chạy thuật toán cache nhận các đầu vào chuẩn hóa sau:
+
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Tham số & Ý nghĩa \\
+\midrule
+\code{request\_trace} & Chuỗi request \(r_1,r_2,\ldots,r_T\), mỗi request là một item ID. \\
+\code{cache\_size} \(k\) & Số item tối đa được phép giữ trong cache. \\
+\code{predictor} & Mô hình \rawml{} đã được huấn luyện trên train trace. \\
+\code{hedge\_learning\_rate} \(\eta\) & Tốc độ cập nhật trọng số expert trong Hedge. \\
+\code{seed} & Seed cho các thành phần ngẫu nhiên, đặc biệt là MARK. \\
+\code{recent\_window\_size} & Kích thước cửa sổ gần đây dùng để tính \code{recent\_frequency}. \\
+\bottomrule
+\end{tabularx}
+
+Output là:
+\[
+    (\text{algorithm\_name},\ \text{cache\_misses},\ \text{total\_requests}).
+\]
+Từ đó tính được:
+\[
+    \mr = \frac{\text{cache\_misses}}{\text{total\_requests}}.
+\]
+
+Tại thời điểm \(t\), trạng thái của hệ thống có thể viết là:
+\[
+    S_t = (C_t, F_t, M_t, W_t, P_t),
+\]
+trong đó:
+
+\begin{itemize}[leftmargin=1.4em]
+    \item \(C_t\): tập item đang nằm trong cache.
+    \item \(F_t\): feature state, gồm recency, frequency, recent frequency, average inter-arrival, cache age.
+    \item \(M_t\): tập marked item của MARK.
+    \item \(W_t\): vector trọng số expert của Hedge.
+    \item \(P_t\): các feedback đang chờ quan sát do feedback bị trễ.
+\end{itemize}
+
+\section{Chuẩn hóa tham số đầu vào dùng chung cho các expert}
+
+Mỗi expert có logic riêng, nhưng để đưa vào Hedge thì mọi expert phải được chuẩn hóa về cùng một interface:
+
+\[
+    E_j(C_t,F_t,M_t,t) \rightarrow e_{j,t}, \qquad e_{j,t}\in C_t.
+\]
+
+Nghĩa là khi cache miss xảy ra và cache đã đầy, expert \(E_j\) nhận trạng thái hiện tại rồi trả về một item đang nằm trong cache để đề xuất evict.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Expert & Tham số thật sự dùng & Output chuẩn hóa \\
+\midrule
+LRU & \(C_t,F_t,t\) & Một item \(e_t\in C_t\) \\
+LFU & \(C_t,F_t,t\) & Một item \(e_t\in C_t\) \\
+MARK & \(C_t,M_t,\text{seed}\) & Một item \(e_t\in C_t\) \\
+\rawml{} & \(C_t,F_t,t,\text{predictor}\) & Một item \(e_t\in C_t\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Nhờ chuẩn hóa này, Hedge không cần biết bên trong expert là heuristic, randomized algorithm hay mô hình ML. Hedge chỉ nhìn thấy các phiếu:
+\[
+    \{e_{1,t},e_{2,t},\ldots,e_{N,t}\}
+\]
+và trọng số tương ứng:
+\[
+    \{w_{1,t},w_{2,t},\ldots,w_{N,t}\}.
+\]
+
+\section{Bất biến đúng đắn tối thiểu của cache}
+
+Tính đúng đắn cơ bản của thuật toán cache là thuật toán luôn tạo ra trạng thái cache hợp lệ.
+
+Các bất biến cần giữ:
+
+\begin{enumerate}[leftmargin=1.4em]
+    \item \textbf{Bất biến kích thước:}
+    \[
+        |C_t|\le k.
+    \]
+    \item \textbf{Bất biến eviction:} nếu phải evict thì item bị evict nằm trong cache:
+    \[
+        e_t\in C_t.
+    \]
+    \item \textbf{Bất biến đưa request mới vào cache:} nếu \(r_t\notin C_t\) và xảy ra miss, sau khi xử lý thì \(r_t\) được đưa vào cache.
+    \item \textbf{Bất biến cập nhật lịch sử:} sau mỗi request, feature state được cập nhật để mọi expert dùng cùng một lịch sử.
+\end{enumerate}
+
+LRU, LFU, MARK và \rawml{} đều chọn từ \(C_t\), nên từng expert đều tạo phiếu hợp lệ. Hedge chỉ tổng hợp các phiếu hợp lệ này, vì vậy quyết định cuối cùng cũng hợp lệ.
+
+\section{Expert LRU}
+
+LRU là \emph{Least Recently Used}. Ý tưởng là evict item lâu nhất chưa được truy cập lại. Nếu \(\operatorname{last}(x)\) là thời điểm gần nhất item \(x\) được truy cập, thì:
+\[
+    e_t^{\mathrm{LRU}}
+    =
+    \arg\min_{x\in C_t}\operatorname{last}(x).
+\]
+
+\textbf{Trực giác.} Nếu một item vừa được dùng gần đây, có khả năng nó sẽ tiếp tục được dùng trong tương lai gần. Vì vậy LRU giữ item gần đây và loại item cũ nhất.
+
+\textbf{Mạnh ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Tốt với workload có temporal locality.
+    \item Không cần training.
+    \item Dễ cài đặt và chạy nhanh.
+\end{itemize}
+
+\textbf{Yếu ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Dễ bị phá bởi scan pattern: nhiều item mới đi qua một lần có thể đẩy item quan trọng ra khỏi cache.
+    \item Không biết item nào hot dài hạn.
+    \item Không thích nghi tốt khi workload chuyển từ locality ngắn hạn sang popularity dài hạn.
+\end{itemize}
+
+\section{Expert LFU}
+
+LFU là \emph{Least Frequently Used}. Ý tưởng là evict item có tần suất truy cập thấp nhất:
+\[
+    e_t^{\mathrm{LFU}}
+    =
+    \arg\min_{x\in C_t}\operatorname{freq}(x).
+\]
+
+Trong implementation, nếu nhiều item có cùng frequency, thuật toán dùng thêm last access time và item ID để phá hòa.
+
+\textbf{Trực giác.} Nếu một item đã được truy cập nhiều lần, nó có thể là item phổ biến và nên được giữ lại.
+
+\textbf{Mạnh ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Tốt với workload có item hot lặp lại nhiều lần.
+    \item Khai thác popularity tốt hơn LRU.
+    \item Không cần training.
+\end{itemize}
+
+\textbf{Yếu ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Có thể giữ item từng hot nhưng hiện đã hết hot.
+    \item Thích nghi chậm khi phân phối truy cập đổi pha.
+    \item Nếu không có decay, tần suất quá khứ có thể làm sai quyết định hiện tại.
+\end{itemize}
+
+\section{Expert MARK}
+
+MARK là randomized expert dựa trên cơ chế đánh dấu. Khi một item được request, item đó được mark. Khi cần evict, MARK ưu tiên chọn ngẫu nhiên trong các item chưa được mark:
+\[
+    e_t^{\mathrm{MARK}}
+    \sim
+    \operatorname{Uniform}(C_t\setminus M_t).
+\]
+Nếu mọi item trong cache đều đã được mark, thuật toán xóa mark để bắt đầu pha mới.
+
+\textbf{Trực giác.} Item đã được request trong pha hiện tại có khả năng còn liên quan, nên MARK không muốn evict chúng ngay. Việc chọn ngẫu nhiên giúp thuật toán có bảo đảm kỳ vọng trong mô hình paging online.
+
+\textbf{Mạnh ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Có nền tảng competitive analysis.
+    \item Không phụ thuộc vào dữ liệu train.
+    \item Tránh evict item đã được truy cập trong pha hiện tại.
+\end{itemize}
+
+\textbf{Yếu ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Có thành phần ngẫu nhiên, kết quả phụ thuộc seed.
+    \item Không dùng tần suất chi tiết như LFU.
+    \item Không học pattern riêng của từng trace.
+\end{itemize}
+
+Về bảo đảm toán học, MARK không tối ưu như Belady/OPT. Bảo đảm của MARK thuộc loại competitive guarantee: trong mô hình paging online chuẩn, randomized marking algorithms có thể đạt hệ số cạnh tranh kỳ vọng theo bậc \(O(\log k)\) so với OPT. Đây là lý do MARK là baseline lý thuyết quan trọng.
+
+\section{Expert RawML}
+
+\rawml{} là expert học máy. Nó dùng mô hình hồi quy để dự đoán khoảng cách đến lần truy cập tiếp theo của từng item trong cache.
+
+Với mỗi item \(x\in C_t\), vector đặc trưng là:
+\[
+    \phi_t(x)=
+    [
+    \text{recency},
+    \text{frequency},
+    \text{recent\_frequency},
+    \text{average\_inter\_arrival},
+    \text{cache\_age}
+    ].
+\]
+
+Mô hình dự đoán:
+\[
+    \widehat{d}_t(x)=f_\theta(\phi_t(x)).
+\]
+Sau đó \rawml{} chọn item có khoảng cách dự đoán lớn nhất:
+\[
+    e_t^{\mathrm{RawML}}
+    =
+    \arg\max_{x\in C_t}\widehat{d}_t(x).
+\]
+
+\textbf{Trực giác.} Nếu một item còn rất lâu mới được truy cập lại, evict item đó là quyết định hợp lý. Đây chính là trực giác của Belady/OPT, nhưng \rawml{} chỉ dự đoán từ lịch sử chứ không biết tương lai thật.
+
+\textbf{Mạnh ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Có thể học pattern phức tạp hơn heuristic cố định.
+    \item Kết hợp được nhiều tín hiệu cùng lúc.
+    \item Nếu dự đoán tốt, quyết định có thể gần với Belady/OPT hơn LRU/LFU/MARK.
+\end{itemize}
+
+\textbf{Yếu ở đâu.}
+\begin{itemize}[leftmargin=1.4em]
+    \item Không có bảo đảm luôn dự đoán đúng trên test.
+    \item Dễ bị distribution shift giữa train, validation và test.
+    \item MAE thấp chưa chắc giảm cache miss, vì cache miss phụ thuộc quyết định tuần tự.
+\end{itemize}
+
+Về toán học, \rawml{} chỉ có bảo đảm theo nghĩa supervised learning: nó tối ưu loss hồi quy trên tập train. Điều này không đồng nghĩa với bảo đảm tối ưu cache replacement. Vì vậy không nên viết rằng RawML ``được chứng minh luôn đúng''. Cách viết đúng là: RawML là một expert dự đoán, có thể hữu ích thực nghiệm, nhưng cần Hedge hoặc baseline cổ điển để giảm rủi ro khi dự đoán sai.
+
+\section{Belady/OPT và ý nghĩa của tối ưu ngoại tuyến}
+
+Belady/OPT evict item có lần truy cập tiếp theo xa nhất trong tương lai:
+\[
+    e_t^{\mathrm{OPT}}
+    =
+    \arg\max_{x\in C_t} d_t(x),
+\]
+trong đó \(d_t(x)\) là khoảng cách thật đến lần truy cập tiếp theo của \(x\).
+
+Belady/OPT tối ưu nếu biết toàn bộ tương lai. Chứng minh chuẩn là exchange argument: nếu một thuật toán tối ưu nào đó không evict item xa nhất trong tương lai, ta có thể hoán đổi quyết định eviction sang item xa nhất mà không làm tăng số miss trước lần truy cập quan trọng tiếp theo. Lặp lại hoán đổi này sẽ biến một thuật toán tối ưu bất kỳ thành Belady/OPT mà không tăng tổng miss.
+
+Vì vậy Belady/OPT là lower bound trong benchmark, không phải thuật toán online triển khai được.
+
+\section{Hedge kết hợp các expert như thế nào?}
+
+Không có expert nào thống trị mọi trace. Hedge xem mỗi expert như một người cố vấn. Ban đầu:
+\[
+    w_{j,0}=1.
+\]
+
+Khi xảy ra cache miss và cache đầy, mỗi expert đề xuất một item. Hedge tổng hợp phiếu theo trọng số. Nếu nhiều expert cùng đề xuất một item, điểm của item đó tăng:
+\[
+    \operatorname{score}_t(x)
+    =
+    \sum_{j:e_{j,t}=x}
+    \frac{w_{j,t}}{\sum_i w_{i,t}}.
+\]
+Item có score cao nhất bị evict.
+
+Khi feedback cho thấy expert \(j\) đề xuất sai, trọng số giảm:
+\[
+    w_{j,t+1}
+    =
+    w_{j,t}\exp(-\eta \ell_{j,t}).
+\]
+
+Trong dự án, feedback bị trễ. Nếu expert đề xuất evict item \(x\), và \(x\) xuất hiện lại sau \(\Delta t\) bước, expert nhận loss:
+\[
+    \ell_{j,t}=\frac{1}{1+\Delta t}.
+\]
+Nếu item xuất hiện lại rất sớm, \(\Delta t\) nhỏ, loss lớn. Nếu item rất lâu mới xuất hiện lại, loss nhỏ. Loss này bị chặn:
+\[
+    0 < \ell_{j,t}\le 1,
+\]
+nên update mũ của Hedge ổn định về mặt toán học.
+
+Phiên bản \code{AllExpertSoft} còn dùng recent loss:
+\[
+    \widetilde{w}_{j,t}
+    =
+    w_{j,t}\exp(-\beta\overline{\ell}_{j,t}),
+\]
+trong đó \(\overline{\ell}_{j,t}\) là loss trung bình gần đây. Cơ chế này giúp thuật toán phản ứng nhanh hơn khi workload đổi pha.
+
+\section{Hedge giải quyết điểm yếu của từng expert như thế nào?}
+
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+Expert & Điểm yếu riêng & Hedge khắc phục bằng cách nào \\
+\midrule
+LRU & Kém với scan pattern và item hot dài hạn & Nếu LRU tạo loss cao, trọng số LRU giảm; LFU hoặc RawML có thể chiếm ưu thế. \\
+LFU & Giữ item hết hot, thích nghi chậm khi đổi pha & Recent loss làm LFU mất ảnh hưởng nếu popularity cũ không còn đúng. \\
+MARK & Ngẫu nhiên, không dùng feature & Nếu MARK không phù hợp trace, Hedge giảm trọng số của MARK. \\
+\rawml{} & Có thể dự đoán sai do shift dữ liệu & LRU/LFU/MARK đóng vai trò neo an toàn khi RawML kém. \\
+\bottomrule
+\end{tabularx}
+
+Như vậy, Hedge không cố chứng minh một expert là tốt nhất. Nó biến bài toán thành: nếu tại mỗi giai đoạn có một expert tương đối tốt, hệ thống sẽ học để dựa vào expert đó nhiều hơn.
+
+\section{Bảo đảm toán học của Hedge}
+
+Trong mô hình expert advice chuẩn, giả sử có \(N\) expert và loss bị chặn:
+\[
+    0\le \ell_{j,t}\le 1.
+\]
+Với learning rate phù hợp, Hedge có regret bound:
+\[
+    L_{\mathrm{Hedge}}
+    -
+    \min_{j=1,\ldots,N}L_j
+    =
+    O(\sqrt{T\log N}).
+\]
+
+Ý nghĩa: sau \(T\) bước, tổng loss của Hedge không tệ hơn quá nhiều so với expert tốt nhất cố định trong hindsight.
+
+Cần hiểu đúng:
+
+\begin{itemize}[leftmargin=1.4em]
+    \item Hedge không đảm bảo thắng từng expert trên mọi dataset.
+    \item Hedge không đảm bảo đạt Belady/OPT.
+    \item Hedge đảm bảo cơ chế học có regret hữu hạn so với expert tốt nhất trong lớp expert.
+    \item Với delayed feedback, phân tích lý thuyết thường có thêm hạng phụ thuộc độ trễ; trong code của dự án, loss vẫn bị chặn nên update mũ vẫn hợp lệ.
+\end{itemize}
+
+\section{Tóm tắt kết luận}
+
+Có thể trình bày tính đúng đắn của dự án theo ba tầng:
+
+\begin{enumerate}[leftmargin=1.4em]
+    \item \textbf{Đúng đắn vận hành}: mọi expert và Hedge luôn evict item thuộc cache, nên cache size không vượt quá \(k\).
+    \item \textbf{Đúng đắn lý thuyết của baseline}: Belady/OPT là tối ưu ngoại tuyến; MARK có competitive guarantee trong paging online.
+    \item \textbf{Đúng đắn học online}: Hedge có regret guarantee so với expert tốt nhất trong lớp expert dưới giả thiết loss bị chặn.
+\end{enumerate}
+
+Cách viết an toàn trong báo cáo là: \emph{thuật toán không được chứng minh tối ưu tuyệt đối; nó được thiết kế đúng về mặt invariant, dựa trên các expert có ý nghĩa rõ ràng, và có nền tảng regret minimization để thích nghi giữa các expert.}
+
+\end{document}
