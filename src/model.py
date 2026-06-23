@@ -87,7 +87,7 @@ def choose_lfu_eviction(
     return min(
         cache_items,
         key=lambda cache_item: (
-            feature_state.access_counts[cache_item],
+            feature_state.cache_access_counts[cache_item],
             feature_state.last_access_times.get(cache_item, -1),
             cache_item,
         ),
@@ -194,9 +194,11 @@ def run_mark_cache(
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         marked_items.add(request_item)
         feature_state.update_after_request(
@@ -260,9 +262,11 @@ def run_hedge_full_cache(
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         marked_items.add(request_item)
         feature_state.update_after_request(
@@ -292,7 +296,7 @@ def propose_expert_evictions(
             cache_items=cache_items,
             marked_items=marked_items,
             random_generator=random_generator,
-            mutate_phase=False,
+            mutate_phase=True,
         ),
         "RawML": choose_raw_ml_eviction(
             cache_items=cache_items,
@@ -307,6 +311,7 @@ def choose_weighted_eviction(
     expert_votes: dict[str, str],
     expert_weights: dict[str, float],
 ) -> str:
+    normalize_expert_weights(expert_weights)
     total_weight = sum(expert_weights.values())
     item_scores: defaultdict[str, float] = defaultdict(float)
 
@@ -326,6 +331,21 @@ def create_initial_expert_weights() -> dict[str, float]:
         "MARK": 1.0,
         "RawML": 1.0,
     }
+
+
+def normalize_expert_weights(expert_weights: dict[str, float]) -> None:
+    if not expert_weights:
+        return
+
+    total_weight = sum(expert_weights.values())
+    if total_weight <= 0.0 or not math.isfinite(total_weight):
+        uniform_weight = 1.0 / float(len(expert_weights))
+        for expert_name in expert_weights:
+            expert_weights[expert_name] = uniform_weight
+        return
+
+    for expert_name in expert_weights:
+        expert_weights[expert_name] /= total_weight
 
 
 def store_pending_feedback(
@@ -357,6 +377,9 @@ def apply_observed_feedback(
         expert_weights[pending_vote.expert_name] *= math.exp(
             -hedge_learning_rate * expert_loss
         )
+
+    if observed_votes:
+        normalize_expert_weights(expert_weights)
 
 
 def select_best_hedge_learning_rate(
