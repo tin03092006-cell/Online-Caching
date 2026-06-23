@@ -35,6 +35,7 @@ class OnlineFeatureState:
     inter_arrival_sums: dict[str, float]
     inter_arrival_counts: dict[str, int]
     cache_insert_times: dict[str, int]
+    cache_access_counts: dict[str, int]
     recent_requests: deque[str]
     recent_access_counts: dict[str, int]
 
@@ -47,6 +48,7 @@ class OnlineFeatureState:
             inter_arrival_sums=defaultdict(float),
             inter_arrival_counts=defaultdict(int),
             cache_insert_times={},
+            cache_access_counts=defaultdict(int),
             recent_requests=deque(),
             recent_access_counts=defaultdict(int),
         )
@@ -91,6 +93,7 @@ class OnlineFeatureState:
 
         self.last_access_times[request_item] = current_index
         self.access_counts[request_item] += 1
+        self.cache_access_counts[request_item] += 1
         self.recent_requests.append(request_item)
         self.recent_access_counts[request_item] += 1
 
@@ -220,9 +223,11 @@ def build_training_frame(
                 )
                 cache_items.remove(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
+                feature_state.cache_access_counts.pop(evicted_item, None)
 
             cache_items.add(request_item)
             feature_state.cache_insert_times[request_item] = current_index
+            feature_state.cache_access_counts[request_item] = 0
 
         feature_state.update_after_request(
             request_item=request_item,
