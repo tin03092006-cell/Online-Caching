@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import benchmark_chledowski as base
+from src.raw_trace_processing import write_trace_manifest
 
 
 def algorithm_rank(algorithm_name: str) -> int:
@@ -27,6 +28,61 @@ def algorithm_rank(algorithm_name: str) -> int:
     if algorithm_name.startswith("HedgeFullDelayed"):
         return 4
     return 99
+
+
+def prepared_trace_paths(run_dir: Path) -> list[Path]:
+    official_paths = [
+        run_dir / "train_trace.txt",
+        run_dir / "validation_trace.txt",
+        run_dir / "test_trace.txt",
+    ]
+    if all(path.exists() for path in official_paths):
+        return official_paths
+    raw_path = run_dir / "trace.txt"
+    return [raw_path] if raw_path.exists() else []
+
+
+def validate_prepared_traces_for_result(result: dict) -> dict:
+    if not result.get("success"):
+        return result
+
+    run_dir = base.BENCHMARK_RUNS_DIR / result["dataset"]
+    trace_paths = prepared_trace_paths(run_dir)
+    if not trace_paths:
+        result["success"] = False
+        result["return_code"] = -1
+        result["error_message"] = "No prepared trace file found after dataset processing."
+        return result
+
+    manifest_path = run_dir / "trace_manifest.json"
+    try:
+        stats = write_trace_manifest(trace_paths, manifest_path)
+        result["trace_manifest"] = str(manifest_path)
+        result["trace_manifest_num_files"] = len(stats)
+    except Exception as exc:
+        result["success"] = False
+        result["return_code"] = -1
+        result["error_message"] = f"Prepared trace validation failed: {exc}"
+    return result
+
+
+def process_dataset_with_trace_validation(
+    dataset: str,
+    args,
+    commit_hash: str,
+    code_hashes: dict[str, str],
+    project_commit: str,
+    base_config: dict,
+) -> dict:
+    result = base.process_dataset(
+        dataset,
+        args,
+        commit_hash,
+        code_hashes,
+        project_commit,
+        base_config,
+    )
+    return validate_prepared_traces_for_result(result)
 
 
 def build_summary_all_policies(
@@ -78,7 +134,8 @@ def write_run_report_all_policies(
         f.write(f"- dataset_ref_requested: {args.dataset_ref or 'unpinned'}\n")
         f.write(f"- dataset_commit_used: {commit_hash}\n")
         f.write(f"- jobs: {args.jobs}\n")
-        f.write("- integrated_online_algorithms: Belady/OPT, LRU, LFU, MARK, HedgeFullDelayedAllExpertSoft\n\n")
+        f.write("- integrated_online_algorithms: Belady/OPT, LRU, LFU, MARK, HedgeFullDelayedAllExpertSoft\n")
+        f.write("- prepared_trace_manifest: trace_manifest.json is written inside each successful dataset run directory\n\n")
 
         f.write("## 2. Dataset Preparation Summary\n")
         for report in trace_reports:
@@ -150,7 +207,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_dataset = {
             executor.submit(
-                base.process_dataset,
+                process_dataset_with_trace_validation,
                 dataset,
                 args,
                 commit_hash,
