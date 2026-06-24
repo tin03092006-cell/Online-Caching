@@ -15,14 +15,21 @@ from .model import (
     choose_weighted_eviction,
     normalize_expert_weights,
     propose_expert_evictions,
-    store_pending_feedback,
 )
 
 
 EXPERTS = ("LRU", "LFU", "MARK", "RawML")
 RECENT_LOSS_WINDOW_SIZE = 512
+FEEDBACK_AGE_LIMIT = 512
 MIN_FEEDBACK_COUNT = 8
 SOFT_BETA = 2.0
+
+
+@dataclass(frozen=True)
+class FeedbackAgeRecord:
+    due_index: int
+    voted_item: str
+    pending_vote: PendingExpertVote
 
 
 @dataclass
@@ -111,6 +118,50 @@ def apply_observed_feedback_with_losses(
     return observed_losses
 
 
+def store_pending_feedback_with_age_records(
+    expert_votes: dict[str, str],
+    pending_feedback: defaultdict[str, list[PendingExpertVote]],
+    age_records: deque[FeedbackAgeRecord],
+    current_index: int,
+) -> None:
+    for expert_name, voted_item in expert_votes.items():
+        pending_vote = PendingExpertVote(
+            expert_name=expert_name,
+            decision_index=current_index,
+        )
+        pending_feedback[voted_item].append(pending_vote)
+        age_records.append(
+            FeedbackAgeRecord(
+                due_index=current_index + FEEDBACK_AGE_LIMIT,
+                voted_item=voted_item,
+                pending_vote=pending_vote,
+            )
+        )
+
+
+def collect_mature_feedback_as_zero_loss(
+    pending_feedback: defaultdict[str, list[PendingExpertVote]],
+    age_records: deque[FeedbackAgeRecord],
+    current_index: int,
+) -> list[tuple[str, float]]:
+    mature_losses: list[tuple[str, float]] = []
+
+    while age_records and age_records[0].due_index <= current_index:
+        age_record = age_records.popleft()
+        item_votes = pending_feedback.get(age_record.voted_item)
+        if not item_votes:
+            continue
+        try:
+            item_votes.remove(age_record.pending_vote)
+        except ValueError:
+            continue
+        if not item_votes:
+            pending_feedback.pop(age_record.voted_item, None)
+        mature_losses.append((age_record.pending_vote.expert_name, 0.0))
+
+    return mature_losses
+
+
 def create_initial_expert_weights() -> dict[str, float]:
     return {expert_name: 1.0 for expert_name in EXPERTS}
 
@@ -128,6 +179,7 @@ def run_hedge_full_cache(
     expert_weights = create_initial_expert_weights()
     recent_loss_tracker = RecentExpertLossTracker.create(RECENT_LOSS_WINDOW_SIZE)
     pending_feedback: defaultdict[str, list[PendingExpertVote]] = defaultdict(list)
+    age_records: deque[FeedbackAgeRecord] = deque()
     cache_items: set[str] = set()
     marked_items: set[str] = set()
     cache_misses = 0
@@ -141,12 +193,18 @@ def run_hedge_full_cache(
             current_index=current_index,
             hedge_learning_rate=hedge_learning_rate,
         )
-        for expert_name, expert_loss in observed_losses:
+        mature_zero_losses = collect_mature_feedback_as_zero_loss(
+            pending_feedback=pending_feedback,
+            age_records=age_records,
+            current_index=current_index,
+        )
+        for expert_name, expert_loss in [*observed_losses, *mature_zero_losses]:
             recent_loss_tracker.add_loss(expert_name, expert_loss)
 
         if request_item not in cache_items:
             cache_misses += 1
             if len(cache_items) >= cache_size:
+                mark_phase_reset = not (cache_items - marked_items)
                 expert_votes = propose_expert_evictions(
                     cache_items=cache_items,
                     feature_state=feature_state,
@@ -160,11 +218,14 @@ def run_hedge_full_cache(
                     expert_weights=expert_weights,
                     recent_loss_tracker=recent_loss_tracker,
                 )
-                store_pending_feedback(
+                store_pending_feedback_with_age_records(
                     expert_votes=expert_votes,
                     pending_feedback=pending_feedback,
+                    age_records=age_records,
                     current_index=current_index,
                 )
+                if mark_phase_reset and evicted_item == expert_votes["MARK"]:
+                    marked_items.clear()
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
