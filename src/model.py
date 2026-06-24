@@ -13,6 +13,7 @@ from sklearn.metrics import mean_absolute_error
 
 from .data import (
     FEATURE_COLUMNS,
+    TARGET_COLUMN,
     OnlineFeatureState,
     build_position_lookup,
     calculate_next_distance,
@@ -51,20 +52,20 @@ class RawMLPredictor:
 
     def fit(self, training_frame: pd.DataFrame) -> None:
         feature_frame = training_frame[FEATURE_COLUMNS]
-        target_values = training_frame["target_next_distance"]
+        target_values = training_frame[TARGET_COLUMN]
         self.model.fit(feature_frame, target_values)
         self.is_fitted = True
 
     def predict_distances(self, feature_frame: pd.DataFrame) -> np.ndarray:
         if not self.is_fitted:
             raise RuntimeError("RawMLPredictor must be fitted before prediction.")
-        return np.asarray(self.model.predict(feature_frame), dtype=float)
+        return np.asarray(self.model.predict(feature_frame[FEATURE_COLUMNS]), dtype=float)
 
     def evaluate_mae(self, evaluation_frame: pd.DataFrame) -> float:
         feature_frame = evaluation_frame[FEATURE_COLUMNS]
-        target_values = evaluation_frame["target_next_distance"]
-        predictions = self.predict_distances(feature_frame)  # type: ignore[arg-type]
-        return mean_absolute_error(target_values, predictions)
+        target_values = evaluation_frame[TARGET_COLUMN]
+        predictions = self.predict_distances(feature_frame)
+        return float(mean_absolute_error(target_values, predictions))
 
 
 def choose_lru_eviction(
@@ -106,9 +107,7 @@ def choose_mark_eviction(
     if not unmarked_items:
         if mutate_phase:
             marked_items.clear()
-            unmarked_items = sorted(cache_items)
-        else:
-            unmarked_items = sorted(cache_items)
+        unmarked_items = sorted(cache_items)
 
     return random_generator.choice(unmarked_items)
 
@@ -190,6 +189,7 @@ def run_mark_cache(
                     cache_items=cache_items,
                     marked_items=marked_items,
                     random_generator=random_generator,
+                    mutate_phase=True,
                 )
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
@@ -242,6 +242,7 @@ def run_hedge_full_cache(
         if request_item not in cache_items:
             cache_misses += 1
             if len(cache_items) >= cache_size:
+                mark_phase_reset = not (cache_items - marked_items)
                 expert_votes = propose_expert_evictions(
                     cache_items=cache_items,
                     feature_state=feature_state,
@@ -259,6 +260,8 @@ def run_hedge_full_cache(
                     pending_feedback=pending_feedback,
                     current_index=current_index,
                 )
+                if mark_phase_reset and evicted_item == expert_votes["MARK"]:
+                    marked_items.clear()
                 cache_items.remove(evicted_item)
                 marked_items.discard(evicted_item)
                 feature_state.cache_insert_times.pop(evicted_item, None)
@@ -296,7 +299,7 @@ def propose_expert_evictions(
             cache_items=cache_items,
             marked_items=marked_items,
             random_generator=random_generator,
-            mutate_phase=True,
+            mutate_phase=False,
         ),
         "RawML": choose_raw_ml_eviction(
             cache_items=cache_items,
