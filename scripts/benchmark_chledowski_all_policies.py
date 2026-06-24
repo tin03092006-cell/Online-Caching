@@ -15,6 +15,24 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts import benchmark_chledowski as base
 from src.raw_trace_processing import write_trace_manifest
 
+INTEGRATED_CODE_PATHS = [
+    "src/train_all_policies.py",
+    "src/classic_policies.py",
+    "src/all_expert_soft.py",
+    "src/raw_trace_processing.py",
+    "scripts/benchmark_chledowski_all_policies.py",
+]
+
+
+def get_integrated_code_hashes() -> dict[str, str]:
+    """Hash all files that can affect the integrated benchmark output."""
+    hashes = base.get_code_hashes()
+    for relative_path in INTEGRATED_CODE_PATHS:
+        path = base.PROJECT_ROOT / relative_path
+        if path.exists():
+            hashes[relative_path] = base.hash_file(path)
+    return hashes
+
 
 def algorithm_rank(algorithm_name: str) -> int:
     if algorithm_name == "Belady/OPT":
@@ -52,6 +70,7 @@ def validate_prepared_traces_for_result(result: dict) -> dict:
         result["success"] = False
         result["return_code"] = -1
         result["error_message"] = "No prepared trace file found after dataset processing."
+        base.write_run_status_file(run_dir / "run_status.txt", result)
         return result
 
     manifest_path = run_dir / "trace_manifest.json"
@@ -59,10 +78,12 @@ def validate_prepared_traces_for_result(result: dict) -> dict:
         stats = write_trace_manifest(trace_paths, manifest_path)
         result["trace_manifest"] = str(manifest_path)
         result["trace_manifest_num_files"] = len(stats)
+        base.write_run_status_file(run_dir / "run_status.txt", result)
     except Exception as exc:
         result["success"] = False
         result["return_code"] = -1
         result["error_message"] = f"Prepared trace validation failed: {exc}"
+        base.write_run_status_file(run_dir / "run_status.txt", result)
     return result
 
 
@@ -188,7 +209,7 @@ def main() -> None:
     args = base.parse_args()
     base.verify_git()
     commit_hash = base.manage_repo(args.dataset_ref)
-    code_hashes = base.get_code_hashes()
+    code_hashes = get_integrated_code_hashes()
     project_commit = base.get_project_commit()
     project_dirty = base.get_project_dirty()
 
