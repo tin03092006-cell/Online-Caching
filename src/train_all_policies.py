@@ -10,17 +10,22 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .belady_teacher_label import (
+    BELADY_LABEL_STRATEGY,
+    build_belady_teacher_training_frame,
+    describe_belady_teacher_frame,
+)
 from .classic_policies import run_lfu_cache, run_lru_cache
 from .data import (
     TARGET_COLUMN,
     TraceSplits,
-    build_training_frame,
     load_config,
     load_request_trace,
     save_processed_frame,
     split_trace,
 )
-from .model import CacheRunResult, RawMLPredictor, count_belady_misses, run_mark_cache
+from .model import CacheRunResult, count_belady_misses, run_mark_cache
+from .rawml_belady_model import BeladyTeacherRawMLPredictor
 from .all_expert_soft import run_hedge_full_cache, select_best_hedge_learning_rate
 
 
@@ -32,7 +37,7 @@ def set_seed(seed: int) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train RawML and benchmark OPT, LRU, LFU, MARK, and Hedge together."
+        description="Train Belady-teacher RawML and benchmark OPT, LRU, LFU, MARK, and Hedge together."
     )
     parser.add_argument(
         "--config",
@@ -84,7 +89,7 @@ def build_optional_validation_frame(
     max_training_rows: int,
 ) -> pd.DataFrame | None:
     try:
-        return build_training_frame(
+        return build_belady_teacher_training_frame(
             request_trace=validation_trace,
             cache_size=cache_size,
             recent_window_size=recent_window_size,
@@ -118,6 +123,7 @@ def build_results_frame(
                 "improvement_vs_mark_percent": improvement_vs_mark,
                 "selected_hedge_learning_rate": selected_hedge_learning_rate,
                 "validation_mae": validation_mae if validation_mae is not None else "",
+                "rawml_label_strategy": BELADY_LABEL_STRATEGY,
             }
         )
 
@@ -133,7 +139,7 @@ def print_summary(
     print(selected_hedge_learning_rate)
 
     if validation_mae is not None:
-        print("\nRawML validation MAE:")
+        print("\nRawML validation MAE against D_t^+(x):")
         print(round(validation_mae, 6))
 
     print("\nBenchmark results:")
@@ -154,7 +160,7 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
 
     trace_splits = load_trace_splits_from_config(config, project_root)
 
-    training_frame = build_training_frame(
+    training_frame = build_belady_teacher_training_frame(
         request_trace=trace_splits.train,
         cache_size=cache_size,
         recent_window_size=recent_window_size,
@@ -171,7 +177,7 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
     if validation_frame is not None:
         save_processed_frame(validation_frame, processed_dir / "validation_features.csv")
 
-    predictor = RawMLPredictor(model_config=config["model"], seed=seed)
+    predictor = BeladyTeacherRawMLPredictor(model_config=config["model"], seed=seed)
     predictor.fit(training_frame)
 
     validation_mae = None
@@ -232,6 +238,9 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
     training_meta = {
         "selected_hedge_learning_rate": selected_hedge_learning_rate,
         "validation_mae": validation_mae,
+        "rawml_label_strategy": BELADY_LABEL_STRATEGY,
+        "training_frame": describe_belady_teacher_frame(training_frame),
+        "feature_importance": predictor.feature_importance_dict(),
         "standalone_baselines": ["Belady/OPT", "LRU", "LFU", "MARK"],
         "proposed_algorithm": "HedgeFullDelayedAllExpertSoft",
     }
