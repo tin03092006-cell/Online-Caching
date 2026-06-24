@@ -19,6 +19,8 @@ INTEGRATED_CODE_PATHS = [
     "src/train_all_policies.py",
     "src/classic_policies.py",
     "src/all_expert_soft.py",
+    "src/belady_teacher_label.py",
+    "src/rawml_belady_model.py",
     "src/raw_trace_processing.py",
     "scripts/benchmark_chledowski_all_policies.py",
 ]
