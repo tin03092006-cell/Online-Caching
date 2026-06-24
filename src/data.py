@@ -183,6 +183,49 @@ def choose_lru_item(
     )
 
 
+def calculate_training_sample_interval(
+    trace_length: int,
+    cache_size: int,
+    max_training_rows: int,
+) -> int:
+    """Return a cache-snapshot interval that spreads rows across the trace."""
+    if cache_size <= 0:
+        raise ValueError("cache_size must be positive.")
+    if max_training_rows <= 0:
+        raise ValueError("max_training_rows must be positive.")
+
+    max_snapshots = max(1, max_training_rows // cache_size)
+    return max(1, trace_length // max_snapshots)
+
+
+def append_training_snapshot(
+    training_rows: list[dict[str, float]],
+    cache_items: set[str],
+    feature_state: OnlineFeatureState,
+    current_index: int,
+    position_lookup: dict[str, list[int]],
+    trace_length: int,
+    max_training_rows: int,
+) -> None:
+    for cache_item in sorted(cache_items):
+        if len(training_rows) >= max_training_rows:
+            break
+
+        item_features = feature_state.build_item_features(
+            cache_item=cache_item,
+            current_index=current_index,
+        )
+        item_features[TARGET_COLUMN] = float(
+            calculate_next_distance(
+                cache_item=cache_item,
+                current_index=current_index,
+                position_lookup=position_lookup,
+                trace_length=trace_length,
+            )
+        )
+        training_rows.append(item_features)
+
+
 def build_training_frame(
     request_trace: list[str],
     cache_size: int,
@@ -194,26 +237,29 @@ def build_training_frame(
     cache_items: set[str] = set()
     training_rows: list[dict[str, float]] = []
     trace_length = len(request_trace)
+    sample_interval = calculate_training_sample_interval(
+        trace_length=trace_length,
+        cache_size=cache_size,
+        max_training_rows=max_training_rows,
+    )
+    next_sample_index = 0
 
     for current_index, request_item in enumerate(request_trace):
-        if len(cache_items) == cache_size and len(training_rows) < max_training_rows:
-            for cache_item in sorted(cache_items):
-                item_features = feature_state.build_item_features(
-                    cache_item=cache_item,
-                    current_index=current_index,
-                )
-                item_features[TARGET_COLUMN] = float(
-                    calculate_next_distance(
-                        cache_item=cache_item,
-                        current_index=current_index,
-                        position_lookup=position_lookup,
-                        trace_length=trace_length,
-                    )
-                )
-                training_rows.append(item_features)
-
-                if len(training_rows) >= max_training_rows:
-                    break
+        if (
+            len(cache_items) == cache_size
+            and len(training_rows) < max_training_rows
+            and current_index >= next_sample_index
+        ):
+            append_training_snapshot(
+                training_rows=training_rows,
+                cache_items=cache_items,
+                feature_state=feature_state,
+                current_index=current_index,
+                position_lookup=position_lookup,
+                trace_length=trace_length,
+                max_training_rows=max_training_rows,
+            )
+            next_sample_index = current_index + sample_interval
 
         if request_item not in cache_items:
             if len(cache_items) >= cache_size:
