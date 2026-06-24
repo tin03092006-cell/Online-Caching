@@ -1,58 +1,75 @@
-# Hedge Cache: All Expert Soft Anchor
+# Hedge Cache: Integrated All-Policies Benchmark
 
-Dự án này triển khai pipeline cốt lõi cho bài toán **Online Caching** được tăng cường bằng Machine Learning. Phiên bản hiện tại trên nhánh `main` sử dụng thuật toán tối ưu nhất: **`HedgeFullDelayedAllExpertSoft`**.
+Dự án triển khai pipeline **Online Caching** tăng cường Machine Learning. Pipeline hiện tại chạy đồng thời các thuật toán `Belady/OPT`, `LRU`, `LFU`, `MARK` và `HedgeFullDelayedAllExpertSoft` trong một lần benchmark.
 
 ## 1. Kiến trúc thuật toán cốt lõi
 
-Thuật toán kết hợp sức mạnh của nhiều chuyên gia (experts) khác nhau thông qua cơ chế học máy online (Hedge):
-- **Các chuyên gia tham gia:** `LRU`, `LFU`, `MARK`, và `RawML` (Gradient Boosting Regressor).
-- **Delayed Feedback:** Loss của một chuyên gia chỉ được cập nhật khi quyết định đẩy (evict) của chuyên gia đó được hệ thống nhìn thấy lại trong tương lai (khi cache miss xảy ra).
-- **All Expert Soft Anchor:** Thay vì chỉ chọn ngẫu nhiên một chuyên gia, thuật toán lấy mẫu tỷ lệ (soft sampling) dựa trên trọng số Hedge của *tất cả* các chuyên gia để đưa ra quyết định eviction tập thể tối ưu nhất. Cơ chế này đã đánh bại cả LFU trên các dataset phức tạp (như `mcf`, `xalanc`).
+`HedgeFullDelayedAllExpertSoft` kết hợp bốn expert:
+
+- `LRU`: evict item có lần truy cập gần nhất xa nhất.
+- `LFU`: evict item có cache-local frequency nhỏ nhất, tie-break bằng last access và item ID.
+- `MARK`: randomized marking policy, phụ thuộc seed.
+- `RawML`: Gradient Boosting Regressor dự đoán `target_next_distance` để xấp xỉ tín hiệu Belady/OPT.
+
+Hedge dùng weighted voting trên đề xuất eviction của các expert. Score của một item là tổng trọng số của các expert vote cho item đó. Feedback là delayed counterfactual proxy loss.
 
 ## 2. Cài đặt môi trường
 
-Khuyến nghị sử dụng Python 3.10+.
+Khuyến nghị Python 3.10+.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate      # Linux/macOS
-# .venv\Scripts\activate       # Windows PowerShell
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## 3. Chạy tự động Benchmark (Chledowski Datasets)
+## 3. Chạy benchmark tích hợp
 
-Dự án cung cấp bộ script tự động tải, tiền xử lý và chạy mô phỏng thuật toán trên các dataset chuẩn.
-
-**Bước 1:** Chạy benchmark trên toàn bộ các dataset (có thể chọn 1 dataset qua `--datasets mcf`):
 ```bash
-python scripts/benchmark_chledowski.py --datasets all --dataset-ref 804cf4ca3ba1a2c59d56dfdb1204a96df246cf2b
+python scripts/benchmark_chledowski_all_policies.py --datasets all --jobs auto --dataset-ref 804cf4ca3ba1a2c59d56dfdb1204a96df246cf2b --force
 ```
 
-**Bước 2:** Chạy script đánh giá phụ để bổ sung baseline (LRU/LFU) vào báo cáo cuối cùng:
-```bash
-python scripts/quick_eval_lru_lfu_from_processed.py
+Ghi chú:
+
+- Không cần chạy `scripts/quick_eval_lru_lfu_from_processed.py` nữa.
+- `--jobs auto` chạy song song theo dataset trên CPU.
+- Mỗi worker giới hạn BLAS/OpenMP thread về 1 để tránh oversubscribe CPU.
+
+Kết quả chính:
+
+```text
+data/processed/summary_all_datasets.csv
+data/processed/RUN_REPORT.md
+data/processed/chledowski_trace_report.csv
+data/processed/run_status_all_datasets.csv
 ```
 
-Kết quả cuối cùng sẽ được gộp và lưu tại:
-- `data/processed/summary_all_datasets.csv`
-- `data/processed/RUN_REPORT.md`
+Mỗi dataset run còn có:
 
-## 4. Cấu trúc thư mục
+```text
+data/processed/benchmark_runs/<dataset>/benchmark_results.csv
+data/processed/benchmark_runs/<dataset>/trace_manifest.json
+data/processed/benchmark_runs/<dataset>/stdout.log
+data/processed/benchmark_runs/<dataset>/stderr.log
+```
 
-- `src/`: Chứa mã nguồn cốt lõi.
-  - `data.py`: Trích xuất feature (recency, frequency, v.v...) và sinh label.
-  - `model.py`: Chứa các baseline (Belady/OPT, MARK, LRU, LFU, RawML).
-  - `soft_classic_anchor.py`: Thuật toán lõi `HedgeFullDelayedAllExpertSoft`.
-  - `train_soft.py`: Pipeline gom nối từ data, model đến simulation.
-- `scripts/`: Chứa mã nguồn tự động hóa benchmark.
-- `configs/`: Chứa `config.yaml` định nghĩa các hyperparameter (ví dụ: `cache_size`, `candidate_learning_rates`).
+## 4. Cấu trúc thư mục chính
 
-## 5. Chỉnh sửa cấu hình thủ công
+- `src/data.py`: feature extraction và label `target_next_distance`.
+- `src/model.py`: Belady/OPT, MARK, RawML và hàm chọn eviction của expert.
+- `src/classic_policies.py`: standalone LRU/LFU runners.
+- `src/all_expert_soft.py`: HedgeFullDelayedAllExpertSoft.
+- `src/train_all_policies.py`: pipeline train/evaluate tích hợp toàn bộ thuật toán.
+- `src/train.py`: entrypoint trỏ tới `train_all_policies`.
+- `scripts/benchmark_chledowski_all_policies.py`: benchmark nhiều dataset, có CPU parallel.
+- `automation_benchmark.md`: hướng dẫn ngắn cho IDE AI agent tự chạy benchmark.
 
-Nếu bạn không chạy benchmark tự động mà muốn chạy thử nghiệm đơn lẻ, bạn có thể tự chỉnh sửa file `configs/config.yaml` và chạy lệnh sau:
+## 5. Chạy một trace thủ công
+
+Đặt trace tại `data/raw/trace.txt`, sau đó chạy:
 
 ```bash
 python -m src.train --config configs/config.yaml
 ```
-Dữ liệu raw test cần được đặt tại `data/raw/trace.txt` (mỗi dòng 1 request). Kết quả sẽ được xuất ra thư mục `data/processed/`.
+
+Output sẽ nằm trong `data/processed/`.
