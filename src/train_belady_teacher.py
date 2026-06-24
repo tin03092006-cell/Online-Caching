@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/config_belady_teacher.yaml"),
+        default=Path("configs/belady_teacher.yaml"),
         help="Path to the YAML config file.",
     )
     return parser.parse_args()
@@ -161,7 +161,7 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
     selected_hedge_learning_rate = select_best_hedge_learning_rate(
         validation_trace=trace_splits.validation,
         cache_size=cache_size,
-        predictor=predictor,  # duck-typed: exposes predict_distances
+        predictor=predictor,
         candidate_learning_rates=candidate_learning_rates,
         seed=seed,
         recent_window_size=recent_window_size,
@@ -180,7 +180,7 @@ def run_pipeline(config: dict[str, Any], project_root: Path) -> None:
     hedge_result = run_hedge_full_cache(
         request_trace=trace_splits.test,
         cache_size=cache_size,
-        predictor=predictor,  # duck-typed: exposes predict_distances
+        predictor=predictor,
         hedge_learning_rate=selected_hedge_learning_rate,
         seed=seed,
         recent_window_size=recent_window_size,
